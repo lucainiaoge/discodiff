@@ -703,8 +703,7 @@ class DacEncodecClapDatasetH5(Dataset):
     @torch.no_grad()
     def get_objects(self, index):
         if self.random_load:
-            # file_id = random.randint(0, len(self.h5_filenames) - 1)
-            file_id = 0 # debug
+            file_id = random.randint(0, len(self.h5_filenames) - 1)
         else:
             file_id = self.get_file_id_from_chunk_id(index)
 
@@ -766,8 +765,7 @@ class DacEncodecClapDatasetH5(Dataset):
                     return_dict["chatgpt_text_clap"] = chatgpt_text_claps[chatgpt_sel]
             
             if self.random_load:
-                # chunk_id = str(random.randint(0, num_chunks - 1))
-                chunk_id = str(0) # debug for overfit test
+                chunk_id = str(random.randint(0, num_chunks - 1))
             else:
                 if file_id == 0:
                     relative_chunk_id = int(index)
@@ -788,11 +786,9 @@ class DacEncodecClapDatasetH5(Dataset):
                     else:
                         return self.get_objects(index - 1)
                     print(f"Chunk {chunk_name} is too short, loading another")
-                # dac_frame_start = random.randint(0, dac_frame_len_file - self.dac_frame_len)
-                dac_frame_start = 0 # debug
+                dac_frame_start = random.randint(0, dac_frame_len_file - self.dac_frame_len)
                 start_proportion = dac_frame_start / dac_frame_len_file
                 length_proportion = self.dac_frame_len /dac_frame_len_file
-                # frame_start = 0 # debug for overfit test
                 dac_latents = f[chunk_id]['dac_latents'][:, dac_frame_start:dac_frame_start + self.dac_frame_len]
                 dac_rvq = f[chunk_id]['dac_rvq'][:, dac_frame_start:dac_frame_start + self.dac_frame_len]
                 return_dict["dac_rvq"] = dac_rvq

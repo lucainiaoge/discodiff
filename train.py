@@ -106,7 +106,7 @@ class DacCLAPDataModule(L.LightningDataModule):
             h5_dir=valsest_dir,
             dac_frame_len=self.config.sample_size,
             dataset_size=self.config.val_dataset_size,
-            random_load=True, # debug # False,
+            random_load=False,
         )
         return DataLoader(
             self.val_dataset,
@@ -195,6 +195,8 @@ class DiscodiffLitModel(L.LightningModule):
         
         self.loss_fn = torch.nn.L1Loss()
 
+        self.debug = False
+
         self.save_hyperparameters()
 
     @torch.no_grad()
@@ -236,7 +238,14 @@ class DiscodiffLitModel(L.LightningModule):
         dtype = dac_latents.dtype
         dac_latents_gt_primary = dac_latents_normalize(dac_latents[...,:DAC_DIM_SINGLE, :], selection="primary")
         dac_latents_gt_secondary = dac_latents_normalize(dac_latents[...,DAC_DIM_SINGLE:, :], selection="secondary") if not train_primary else None
-
+        if self.debug:
+            print(f"dac_latents mean  = {dac_latents.mean().cpu().item()}, var = {dac_latents.var().cpu().item()}")
+            print(f"dac_latents_primary mean  = {dac_latents[...,:DAC_DIM_SINGLE, :].mean().cpu().item()}, var = {dac_latents[...,:DAC_DIM_SINGLE, :].var().cpu().item()}")
+            print(f"dac_latents_secondary mean  = {dac_latents[...,DAC_DIM_SINGLE:, :].mean().cpu().item()}, var = {dac_latents[...,DAC_DIM_SINGLE:, :].var().cpu().item()}")
+            print(f"dac_latents_primary normalized mean  = {dac_latents_gt_primary.mean().cpu().item()}, var = {dac_latents_gt_primary.var().cpu().item()}")
+            if dac_latents_gt_secondary is not None:
+                print(f"dac_latents_secondary normalized mean  = {dac_latents_gt_secondary.mean().cpu().item()}, var = {dac_latents_gt_secondary.var().cpu().item()}")
+        
         # Sample a random timestep for each sample in batch
         timesteps = torch.randint(
             0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=device
@@ -348,7 +357,7 @@ class DiscodiffLitModel(L.LightningModule):
             use_audio_clap = False,
             return_dict = True,
         ).audios
-
+        
         sampled_audios_given_audio_clap = self.pipeline(
             num_inference_steps = self.config.num_inference_timesteps,
             guidance_scale = self.config.cfg_scale,
@@ -362,7 +371,7 @@ class DiscodiffLitModel(L.LightningModule):
             use_audio_clap = True,
             return_dict = True,
         ).audios
-
+        
         sampled_audios_given_primary = self.pipeline(
             num_inference_steps = self.config.num_inference_timesteps,
             guidance_scale = self.config.cfg_scale,
@@ -370,6 +379,7 @@ class DiscodiffLitModel(L.LightningModule):
             generator = torch.Generator(device=device).manual_seed(0),
             
             primary_latents = batch["dac_latents"][...,:DAC_DIM_SINGLE, :], # default: unnormalized
+            normalize_input_latents = True, # do normalization inside pipeline
             do_primary_loop = False,
             
             prompt_embeds_t5 = prompt_embeds_t5,
@@ -386,8 +396,6 @@ class DiscodiffLitModel(L.LightningModule):
         if torch.abs(sampled_audios_reconstructed).max() > 1:
             sampled_audios_reconstructed = sampled_audios_reconstructed / torch.abs(sampled_audios_reconstructed).max()
 
-        # debug
-        print(sampled_audios_reconstructed.shape)
         if torch.rand(1) < 0.5:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots(1)
