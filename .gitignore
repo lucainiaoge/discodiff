@@ -240,6 +240,7 @@ fabric.properties
 .idea/caches/build_file_checksums.ser
 
 # custom
+wandb/
 results/
 *.mp3
 *.wav

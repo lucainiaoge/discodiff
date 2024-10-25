@@ -106,7 +106,7 @@ class DacCLAPDataModule(L.LightningDataModule):
             h5_dir=valsest_dir,
             dac_frame_len=self.config.sample_size,
             dataset_size=self.config.val_dataset_size,
-            random_load=False,
+            random_load=True, # False, # debug
         )
         return DataLoader(
             self.val_dataset,
@@ -177,7 +177,7 @@ class DiscodiffLitModel(L.LightningModule):
     
         # get other components
         dac_model_path = dac.utils.download(model_type="44khz")
-        self.dac_model = dac.DAC.load(dac_model_path)
+        self.dac_model = dac.DAC.load(dac_model_path).eval()
         for param in self.dac_model.parameters():
             param.requires_grad = False
         
@@ -396,12 +396,12 @@ class DiscodiffLitModel(L.LightningModule):
         if torch.abs(sampled_audios_reconstructed).max() > 1:
             sampled_audios_reconstructed = sampled_audios_reconstructed / torch.abs(sampled_audios_reconstructed).max()
 
-        if torch.rand(1) < 0.5:
-            import matplotlib.pyplot as plt
-            fig, ax = plt.subplots(1)
-            ax.plot(sampled_audios_reconstructed[0].cpu().numpy()[:10000])
-            fig.savefig("debug.png")
-            plt.close(fig)
+        # if torch.rand(1) < 0.5:
+        #     import matplotlib.pyplot as plt
+        #     fig, ax = plt.subplots(1)
+        #     ax.plot(sampled_audios_reconstructed[0].cpu().numpy()[:10000])
+        #     fig.savefig("debug.png")
+        #     plt.close(fig)
         
         out_dict = {
             "sampled_audios_default": sampled_audios_default,
@@ -434,9 +434,33 @@ def save_demo(
 ):
     bs = len(batch['name'])
     log_dict = {}
+    tabel_columns = ["batch_id"]
+    table_contents = []
     for i_batch in range(bs):
         audio_name = str(batch['name'][i_batch])
         filename_sample = f'{audio_name}.wav'
+        this_table_content = [i_batch]
+
+        if i_batch == 0:
+            tabel_columns.append("name")
+        this_table_content.append(audio_name)
+
+        if 'text' not in batch:
+            continue
+        text_caption = str(batch['text'][i_batch])
+        filename_text = f'{audio_name}.txt'
+        dir_text = os.path.join(save_path, "text")
+        if not os.path.exists(dir_text):
+            os.makedirs(dir_text)
+        filepath_text = os.path.join(dir_text, filename_text)
+        with open(filepath_text, 'w') as f:
+            f.write(text_caption)
+
+        if i_batch == 0:
+            tabel_columns.append("text")
+        this_table_content.append(text_caption)
+        log_dict[f'text_{i_batch}'] = text_caption
+            
         for audio_type in outputs.keys():
             dir_sample = os.path.join(save_path, audio_type)
             if not os.path.exists(dir_sample):
@@ -448,29 +472,34 @@ def save_demo(
                 this_audio = this_audio.unsqueeze(0)
             this_wave_sample = this_audio.clamp(-1, 1).mul(32767).to(torch.int16).cpu()
             torchaudio.save(filepath_sample, this_wave_sample, sample_rate)
-            log_dict[f"wav_{audio_type}_{i_batch}"] = wandb.Audio(
-                filepath_sample,
-                sample_rate=sample_rate,
-                caption=f'Audio {audio_name}, {audio_type}'
+            
+            if i_batch == 0:
+                tabel_columns.append(f"wav_{audio_type}")
+                tabel_columns.append(f"melspec_{audio_type}")
+            this_table_content.append(
+                wandb.Audio(
+                    filepath_sample,
+                    sample_rate=sample_rate,
+                    caption=f'Audio {audio_name}, {audio_type}'
+                )
             )
-            log_dict[f'melspec_{audio_type}_{i_batch}'] = wandb.Image(
-                audio_spectrogram_image(this_audio),
-                caption=f'Melspec {audio_name}, {audio_type}'
+            log_dict[f"wav_{audio_type}_{i_batch}"] = this_table_content[-1]
+            this_table_content.append(
+                wandb.Image(
+                    audio_spectrogram_image(this_audio),
+                    caption=f'Melspec {audio_name}, {audio_type}'
+                )
             )
+            log_dict[f'melspec_{audio_type}_{i_batch}'] = this_table_content[-1]
 
-        if 'text' not in batch:
-            continue
-        text_caption = str(batch['text'][i_batch])
-        log_dict[f'text_{i_batch}'] = text_caption
-        filename_text = f'{audio_name}.txt'
-        dir_text = os.path.join(save_path, "text")
-        if not os.path.exists(dir_text):
-            os.makedirs(dir_text)
-        filepath_text = os.path.join(dir_text, filename_text)
-        with open(filepath_text, 'w') as f:
-            f.write(text_caption)
-                
-    return log_dict
+        table_contents.append(this_table_content[:])
+
+    log_table = {
+        "data": table_contents,
+        "columns": tabel_columns,
+    }
+    # log_table = wandb.Table(data=table_contents, columns=tabel_columns)
+    return log_dict, log_table
 
 def update_config(args, config: AttrDict):
     config_update = {}
@@ -513,17 +542,23 @@ class ExceptionCallback(L.Callback):
         print(f"{type(err).__name__}: {err}", file=sys.stderr)
 
 class DemoCallback(L.Callback):
-    def __init__(self, config: AttrDict, save_path: Union[str, os.PathLike]):
+    def __init__(self, config: AttrDict, save_path: Union[str, os.PathLike], save_table = True):
         super().__init__()
         self.sample_rate = config.sample_rate
         self.last_demo_step = -1
         self.demo_save_path = save_path
+        self.save_table = save_table
 
     @torch.no_grad()
     def on_validation_batch_end(self, trainer, module, outputs, batch, batch_idx):
-        log_dict = save_demo(outputs, batch, self.demo_save_path, self.sample_rate)
-        trainer.logger.experiment.log(log_dict, step=trainer.global_step)
-
+        log_dict, log_table = save_demo(outputs, batch, self.demo_save_path, self.sample_rate)
+        if not self.save_table:
+            trainer.logger.experiment.log(log_dict, step=trainer.global_step)
+        else:
+            log_table_wandb = wandb.Table(data=log_table["data"], columns=log_table["columns"])
+            # trainer.logger.log_table(key="samples", columns=log_table["columns"], data=log_table["data"], step=trainer.global_step)
+            trainer.logger.experiment.log({"samples": log_table_wandb}, step=trainer.global_step)
+            
     @torch.no_grad()
     def on_test_batch_end(self, trainer, module, outputs, batch, batch_idx):
         self.on_validation_batch_end(trainer, module, outputs, batch, batch_idx)
@@ -605,7 +640,7 @@ def main(args):
         accumulate_grad_batches=1, 
         callbacks=[ckpt_callback, demo_callback, exc_callback],
         logger=wandb_logger,
-        log_every_n_steps=50,
+        log_every_n_steps=1,
         val_check_interval=config.demo_every, 
         check_val_every_n_epoch=None,
         max_epochs=config.max_epochs,

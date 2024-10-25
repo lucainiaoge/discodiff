@@ -14,7 +14,7 @@ T5_MODELS_DIMS = {
 }
 
 config_model_default = AttrDict(
-    sample_size = 2320, # 27 sec dac
+    sample_size = 2240, # 2304, # 2320, # approx 27 sec dac
     in_channels_primary = 8,
     in_channels_secondary = 72,
     out_channels_primary = 8,

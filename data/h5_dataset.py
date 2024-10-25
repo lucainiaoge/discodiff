@@ -599,9 +599,11 @@ class DacEncodecClapDatasetH5(Dataset):
         chroma_frame_len: Optional[int] = None,
         dataset_size:int = 1000, # dummy dataset size only if random_load is True
         random_load:bool = True,
+        random_onset:bool = False,
     ):
         super().__init__()
         self.random_load = random_load
+        self.random_onset = random_onset
 
         self.h5_dir = h5_dir
         self.dac_frame_len = dac_frame_len
@@ -786,7 +788,10 @@ class DacEncodecClapDatasetH5(Dataset):
                     else:
                         return self.get_objects(index - 1)
                     print(f"Chunk {chunk_name} is too short, loading another")
-                dac_frame_start = random.randint(0, dac_frame_len_file - self.dac_frame_len)
+                if self.random_onset:
+                    dac_frame_start = random.randint(0, dac_frame_len_file - self.dac_frame_len)
+                else:
+                    dac_frame_start = 0
                 start_proportion = dac_frame_start / dac_frame_len_file
                 length_proportion = self.dac_frame_len /dac_frame_len_file
                 dac_latents = f[chunk_id]['dac_latents'][:, dac_frame_start:dac_frame_start + self.dac_frame_len]
