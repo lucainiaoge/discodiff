@@ -705,7 +705,8 @@ class DacEncodecClapDatasetH5(Dataset):
     @torch.no_grad()
     def get_objects(self, index):
         if self.random_load:
-            file_id = random.randint(0, len(self.h5_filenames) - 1)
+            # file_id = random.randint(0, len(self.h5_filenames) - 1)
+            file_id = 0 # debug
         else:
             file_id = self.get_file_id_from_chunk_id(index)
 
@@ -767,7 +768,8 @@ class DacEncodecClapDatasetH5(Dataset):
                     return_dict["chatgpt_text_clap"] = chatgpt_text_claps[chatgpt_sel]
             
             if self.random_load:
-                chunk_id = str(random.randint(0, num_chunks - 1))
+                # chunk_id = str(random.randint(0, num_chunks - 1))
+                chunk_id = str(0) # debug
             else:
                 if file_id == 0:
                     relative_chunk_id = int(index)
