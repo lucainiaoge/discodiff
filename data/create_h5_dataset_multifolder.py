@@ -28,12 +28,6 @@ def main(args):
                 print("Folder id start: ", args.folder_id_start, "; Folder id end: ", args.folder_id_end)
                 print("This folder is: ", int(subfolder), " , not in the range of parsing, skipped")
                 continue
-                
-        audio_path = self.audio_paths[file_id]
-        filename = Path(audio_path).name
-        basename = os.path.splitext(filename)[0]
-        out_h5_filename = f"{basename}.hdf5"
-        out_h5_path = os.path.join(target_dir, out_h5_filename)
         
         create_h5_dataset_given_audio_dir(
             audio_dir, json_path, target_dir, dac_model, encodec_model, clap_model,
