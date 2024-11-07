@@ -1,6 +1,11 @@
 import argparse
 import os
-from data.create_h5_dataset import create_h5_dataset_given_audio_dir, get_dac_encodec_clap
+os.chdir(os.path.dirname(os.path.realpath(__file__)))
+os.chdir("..")
+try:
+    from data.create_h5_dataset import create_h5_dataset_given_audio_dir, get_dac_encodec_clap
+except:
+    from create_h5_dataset import create_h5_dataset_given_audio_dir, get_dac_encodec_clap
 
 def main(args):
     root_dir = args.root_dir
@@ -23,10 +28,18 @@ def main(args):
                 print("Folder id start: ", args.folder_id_start, "; Folder id end: ", args.folder_id_end)
                 print("This folder is: ", int(subfolder), " , not in the range of parsing, skipped")
                 continue
-
+                
+        audio_path = self.audio_paths[file_id]
+        filename = Path(audio_path).name
+        basename = os.path.splitext(filename)[0]
+        out_h5_filename = f"{basename}.hdf5"
+        out_h5_path = os.path.join(target_dir, out_h5_filename)
+        
         create_h5_dataset_given_audio_dir(
             audio_dir, json_path, target_dir, dac_model, encodec_model, clap_model,
-            percent_start_end = (None, None), skip_existing = args.skip_existing,
+            percent_start_end = (None, None), 
+            skip_existing = args.skip_existing,
+            skip_existing_strong = args.skip_existing_strong,
             no_audio_chunk = args.no_audio_chunk
         )
 
@@ -62,6 +75,11 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--skip-existing', type=bool, default=False,
+        help='if set to true, then computed features will not be recomputed'
+    )
+    parser.add_argument(
+        '--skip-existing-strong', type=bool, default=False,
+         help='if set to true, then as long as there exists h5 file, the audio will be skipped'
     )
     parser.add_argument(
         '--no-audio-chunk', type=bool, default=False,

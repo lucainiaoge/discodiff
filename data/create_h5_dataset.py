@@ -1,11 +1,16 @@
 import argparse
 import torch
 import os
-from data.h5_dataset import DacEncodecClapTextFeatDataset
+os.chdir(os.path.dirname(os.path.realpath(__file__)))
+os.chdir("..")
+try:
+    from data.h5_dataset import DacEncodecClapTextFeatDataset
+except:
+    from h5_dataset import DacEncodecClapTextFeatDataset
 
 def create_h5_dataset_given_audio_dir(
     audio_dir, json_path, target_dir, dac_model, encodec_model, clap_model,
-    percent_start_end = (None, None), skip_existing = False,
+    percent_start_end = (None, None), skip_existing = False, skip_existing_strong = False,
     chunk_dur_sec = 27, min_sec = 28,
     no_audio_chunk = False
 ):
@@ -26,7 +31,11 @@ def create_h5_dataset_given_audio_dir(
             no_audio_chunk = no_audio_chunk
         )
         print("Dataset created")
-        subdataset.save_audio_text_to_h5_multiple(target_dir, skip_existing = skip_existing)
+        subdataset.save_audio_text_to_h5_multiple(
+            target_dir, 
+            skip_existing = skip_existing,
+            skip_existing_strong = skip_existing_strong
+        )
 
 def get_dac_encodec_clap(use_dac = True, use_encodec = True, use_clap = True):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -20,7 +20,11 @@ from transformers import AutoTokenizer
 from datetime import datetime
 from typing import Optional, Tuple, Union, List
 
-from utils import convert_audio, int16_to_float32, float32_to_int16
+try:
+    from utils import convert_audio, int16_to_float32, float32_to_int16
+except:
+    from ..utils import convert_audio, int16_to_float32, float32_to_int16
+
 
 SPECTROGRAM_NORMALIZATION_FACTOR = 100
 CLAP_DIM = 512
@@ -322,7 +326,13 @@ class DacEncodecClapDataset(Dataset):
         ... (all the way to the last chunk)
     '''
     @torch.no_grad()
-    def save_audio_text_to_h5_single(self, file_id: int, target_dir: Union[str, os.PathLike], skip_existing: bool = False):
+    def save_audio_text_to_h5_single(
+        self, 
+        file_id: int, 
+        target_dir: Union[str, os.PathLike], 
+        skip_existing: bool = False,
+        skip_existing_strong: bool = False,
+    ):
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
             print("Target dir", target_dir, "is created!")
@@ -332,6 +342,9 @@ class DacEncodecClapDataset(Dataset):
         basename = os.path.splitext(filename)[0]
         out_h5_filename = f"{basename}.hdf5"
         out_h5_path = os.path.join(target_dir, out_h5_filename)
+        if os.path.exists(out_h5_path) and skip_existing_strong:
+            print(f"{out_h5_path} exists, skipped.")
+            continue
 
         print("\n ===================== \n")
 
@@ -453,13 +466,19 @@ class DacEncodecClapDataset(Dataset):
         self, 
         target_dir: Union[str, os.PathLike], 
         skip_existing: bool = False, 
+        skip_existing_strong: bool = False, 
         file_id_sel: bool = None
     ):
         if file_id_sel is None:
             file_id_sel = range(len(self.audio_paths))
         for file_id in file_id_sel:
             try:
-                self.save_audio_text_to_h5_single(file_id, target_dir, skip_existing=skip_existing)
+                self.save_audio_text_to_h5_single(
+                    file_id, 
+                    target_dir, 
+                    skip_existing=skip_existing, 
+                    skip_existing_strong=skip_existing_strong
+                )
             except Exception as ex:
                 trace = []
                 tb = ex.__traceback__
