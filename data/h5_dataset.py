@@ -344,7 +344,7 @@ class DacEncodecClapDataset(Dataset):
         out_h5_path = os.path.join(target_dir, out_h5_filename)
         if os.path.exists(out_h5_path) and skip_existing_strong:
             print(f"{out_h5_path} exists, skipped.")
-            continue
+            return
 
         print("\n ===================== \n")
 
