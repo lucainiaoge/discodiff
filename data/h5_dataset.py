@@ -114,7 +114,7 @@ class DacEncodecClapDataset(Dataset):
         self.use_clap = False if self.clap_model is None else True
         
         self.no_audio_chunk = no_audio_chunk
-        if not self.no_audio_chunk and not self.use_dac and not self.use_encodec:
+        if not self.no_audio_chunk and not self.use_dac and not self.use_encodec and not self.use_clap:
             print("Neither DAC or Encodec is given. Switched into no_audio_chunk mode")
             self.no_audio_chunk = True
 
@@ -390,36 +390,48 @@ class DacEncodecClapDataset(Dataset):
                     continue
                 
                 wav, sample_rate = self.get_wav_through_file_id_and_relative_chunk_id(file_id, relative_index)
-                wav_spec = convert_audio(
-                    wav, sample_rate, self.sample_rate, 1
-                ).squeeze().numpy()  # [n_samples]
-
-                powergram = librosa.stft(
-                    y=wav_spec, n_fft=self.mel_window_size,
-                    hop_length=self.mel_hop_size, window='hann', center=True,
-                    pad_mode='constant'
-                )
-                powergram = np.abs(powergram)**2
-                spectrogram = librosa.feature.melspectrogram(
-                    S=powergram, sr=self.sample_rate, n_mels=self.mel_freq_bins
-                )
-                chromagram = librosa.feature.chroma_stft(S=powergram, sr=self.sample_rate)
-                spectrogram_dB = librosa.power_to_db(spectrogram)
-                spectrogram_dB = spectrogram_dB / SPECTROGRAM_NORMALIZATION_FACTOR
-
                 if (chunkname not in f) or self.recompute_feature:
-                    dac_rvq, dac_latents, encodec_rvq, encodec_latents, audio_clap = self.get_rvq_latents_clap_from_wav(
-                        wav, sample_rate
+                    print("Computing features...")
+                    wav_spec = convert_audio(
+                        wav, sample_rate, self.sample_rate, 1
+                    ).squeeze().numpy()  # [n_samples]
+    
+                    powergram = librosa.stft(
+                        y=wav_spec, n_fft=self.mel_window_size,
+                        hop_length=self.mel_hop_size, window='hann', center=True,
+                        pad_mode='constant'
                     )
+                    powergram = np.abs(powergram)**2
+                    spectrogram = librosa.feature.melspectrogram(
+                        S=powergram, sr=self.sample_rate, n_mels=self.mel_freq_bins
+                    )
+                    chromagram = librosa.feature.chroma_stft(S=powergram, sr=self.sample_rate)
+                    spectrogram_dB = librosa.power_to_db(spectrogram)
+                    spectrogram_dB = spectrogram_dB / SPECTROGRAM_NORMALIZATION_FACTOR
+                    
+                    dac_rvq, dac_latents, encodec_rvq, encodec_latents, audio_clap = self.get_rvq_latents_clap_from_wav(wav, sample_rate)
+                    
                 else: # in case processing an h5 file where features are already computed
+                    print("Found existing features, no feature computation is done")
+                    spectrogram_dB = torch.tensor(np.array(f[chunkname]['spectrogram'])) if 'spectrogram' in f[chunkname] else None
+                    chromagram = torch.tensor(np.array(f[chunkname]['chroma'])) if 'chroma' in f[chunkname] else None
+                    
                     dac_rvq = torch.tensor(np.array(f[chunkname]['dac_rvq'])) if 'dac_rvq' in f[chunkname] else None
                     dac_latents = torch.tensor(np.array(f[chunkname]['dac_latents'])) if 'dac_latents' in f[chunkname] else None
                     encodec_rvq = torch.tensor(np.array(f[chunkname]['encodec_rvq'])) if 'encodec_rvq' in f[chunkname] else None
                     encodec_latents =torch.tensor( np.array(f[chunkname]['encodec_latents'])) if 'encodec_latents' in f[chunkname] else None
                     audio_clap = torch.tensor(int16_to_float32(np.array(f[chunkname]['audio_clap']))).unsqueeze(0) if 'audio_clap' in f[chunkname] else None
 
+                dac_rvq, dac_latents, encodec_rvq, encodec_latents, audio_clap = self.get_rvq_latents_clap_from_wav(wav, sample_rate) # debug
+                
                 print(f"Got chunk number {relative_index}")
                 data_dict = {}
+                if spectrogram_dB is not None:
+                    data_dict['spectrogram'] = spectrogram_dB.cpu().numpy().astype(np.float32)
+                    print("Got mel spectrogram with shape", spectrogram_dB.shape)
+                if chromagram is not None:
+                    data_dict['chroma'] = chromagram.cpu().numpy().astype(np.float32)
+                    print("Got chromagram with shape", chromagram.shape)
                 if dac_rvq is not None:
                     data_dict['dac_rvq'] = dac_rvq.cpu().numpy().astype(int)
                     data_dict['dac_frame_len'] = dac_rvq.shape[-1]
@@ -437,11 +449,6 @@ class DacEncodecClapDataset(Dataset):
                 if audio_clap is not None:
                     data_dict['audio_clap'] = float32_to_int16(audio_clap.cpu().numpy())[0, :]
                     print("Got audio clap with shape", data_dict['audio_clap'].shape)
-
-                data_dict['spectrogram'] = float32_to_int16(spectrogram_dB)
-                print("Got mel spectrogram with shape", spectrogram_dB.shape)
-                data_dict['chroma'] = float32_to_int16(chromagram)
-                print("Got chromagram with shape", chromagram.shape)
 
                 if chunkname not in f:
                     grp = f.create_group(chunkname)
@@ -724,8 +731,8 @@ class DacEncodecClapDatasetH5(Dataset):
     @torch.no_grad()
     def get_objects(self, index):
         if self.random_load:
-            # file_id = random.randint(0, len(self.h5_filenames) - 1)
-            file_id = 0 # debug
+            file_id = random.randint(0, len(self.h5_filenames) - 1)
+            # file_id = 0 # debug
         else:
             file_id = self.get_file_id_from_chunk_id(index)
 
@@ -787,8 +794,8 @@ class DacEncodecClapDatasetH5(Dataset):
                     return_dict["chatgpt_text_clap"] = chatgpt_text_claps[chatgpt_sel]
             
             if self.random_load:
-                # chunk_id = str(random.randint(0, num_chunks - 1))
-                chunk_id = str(0) # debug
+                chunk_id = str(random.randint(0, num_chunks - 1))
+                # chunk_id = str(0) # debug
             else:
                 if file_id == 0:
                     relative_chunk_id = int(index)

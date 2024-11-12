@@ -63,8 +63,8 @@ def get_dac_encodec_clap(use_dac = True, use_encodec = True, use_clap = True):
         ) # download the default pretrained checkpoint.
         '''
         from transformers import ClapModel, ClapProcessor
-        clap_model = ClapModel.from_pretrained("laion/larger_clap_music").to(device)
-        processor = ClapProcessor.from_pretrained("laion/larger_clap_music")
+        clap_model = ClapModel.from_pretrained("laion/larger_clap_music_and_speech").to(device)
+        processor = ClapProcessor.from_pretrained("laion/larger_clap_music_and_speech")
         clap_model = [clap_model, processor]
     else:
         clap_model = None
