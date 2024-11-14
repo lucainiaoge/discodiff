@@ -312,9 +312,6 @@ class DiscodiffLitModel(L.LightningModule):
         
         # compute loss
         loss = self.loss_fn(model_output, target)
-
-        # learning rate scheduler update
-        self.lr_schedulers().step()
         self.log('loss', loss, prog_bar=True)
         
         return loss
