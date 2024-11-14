@@ -15,7 +15,8 @@ def main(args):
     dac_model, encodec_model, clap_model = get_dac_encodec_clap(
         use_dac = not args.no_dac,
         use_encodec = not args.no_encodec,
-        use_clap = not args.no_clap
+        use_clap = not args.no_clap,
+        device = args.device
     )
 
     subfolders = os.listdir(root_dir)
@@ -77,6 +78,9 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--no-audio-chunk', type=bool, default=False,
+    )
+    parser.add_argument(
+        '--device', type=str, default=None,
     )
     args = parser.parse_args()
     main(args)

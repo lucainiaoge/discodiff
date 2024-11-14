@@ -395,13 +395,6 @@ class DiscodiffLitModel(L.LightningModule):
         sampled_audios_reconstructed = self.dac_model.decode(z).squeeze(1) # [B, T] # debug
         if torch.abs(sampled_audios_reconstructed).max() > 1:
             sampled_audios_reconstructed = sampled_audios_reconstructed / torch.abs(sampled_audios_reconstructed).max()
-
-        # if torch.rand(1) < 0.5:
-        #     import matplotlib.pyplot as plt
-        #     fig, ax = plt.subplots(1)
-        #     ax.plot(sampled_audios_reconstructed[0].cpu().numpy()[:10000])
-        #     fig.savefig("debug.png")
-        #     plt.close(fig)
         
         out_dict = {
             "sampled_audios_default": sampled_audios_default,
@@ -416,14 +409,21 @@ class DiscodiffLitModel(L.LightningModule):
             list(self.model_primary.parameters()) + list(self.model_secondary.parameters()), 
             lr=self.config.learning_rate
         )
+        num_gpus = 1 if not hasattr(config, "num_gpus") else config.num_gpus
+        if torch.cuda.is_available():
+            print(f"There are {num_gpus} gpus available for training in this experiment.")
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=self.config.lr_warmup_steps,
-            num_training_steps=int(self.config.train_dataset_size * self.config.max_epochs / self.config.train_batch_size),
+            num_training_steps=int(num_gpus * self.config.train_dataset_size * self.config.max_epochs / self.config.train_batch_size),
         )
         return {
             "optimizer": optimizer,
-            "lr_scheduler": lr_scheduler
+            "lr_scheduler": {
+                'scheduler': lr_scheduler,
+                'interval': 'epoch',
+                'frequency': 1
+            }
         }
 
 def save_demo(
@@ -450,8 +450,11 @@ def save_demo(
         text_caption = str(batch['text'][i_batch])
         filename_text = f'{audio_name}.txt'
         dir_text = os.path.join(save_path, "text")
-        if not os.path.exists(dir_text):
-            os.makedirs(dir_text)
+        try:
+            if not os.path.exists(dir_text):
+                os.makedirs(dir_text)
+        except:
+            pass
         filepath_text = os.path.join(dir_text, filename_text)
         with open(filepath_text, 'w') as f:
             f.write(text_caption)
@@ -463,8 +466,11 @@ def save_demo(
             
         for audio_type in outputs.keys():
             dir_sample = os.path.join(save_path, audio_type)
-            if not os.path.exists(dir_sample):
-                os.makedirs(dir_sample)
+            try:
+                if not os.path.exists(dir_sample):
+                    os.makedirs(dir_sample)
+            except:
+                pass
             filepath_sample = os.path.join(dir_sample, filename_sample)
 
             this_audio = outputs[audio_type][i_batch]
@@ -523,6 +529,8 @@ def update_config(args, config: AttrDict):
         config_update["load_audio_clap_prob"] = args.load_audio_clap_prob
     if args.ckpt_save_top_k is not None:
         config_update["save_top_k"] = args.ckpt_save_top_k
+    if args.num_gpus is not None:
+        config_update["num_gpus"] = args.num_gpus
     config.override(config_update)
 
 def save_config(save_path: Union[str, os.PathLike], config: AttrDict):
@@ -638,6 +646,7 @@ def main(args):
         strategy=strategy,
         precision=16,
         accumulate_grad_batches=1, 
+        gradient_clip_val=0.5, 
         callbacks=[ckpt_callback, demo_callback, exc_callback],
         logger=wandb_logger,
         log_every_n_steps=1,

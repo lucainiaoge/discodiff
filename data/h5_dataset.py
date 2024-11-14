@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import os
+import time
 import math
 import random
 import numpy as np
@@ -17,7 +18,7 @@ from torch.utils.data import Dataset
 
 from transformers import AutoTokenizer
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Tuple, Union, List
 
 try:
@@ -332,6 +333,7 @@ class DacEncodecClapDataset(Dataset):
         target_dir: Union[str, os.PathLike], 
         skip_existing: bool = False,
         skip_existing_strong: bool = False,
+        skip_recent: bool = False,
     ):
         if not os.path.exists(target_dir):
             os.makedirs(target_dir)
@@ -345,6 +347,14 @@ class DacEncodecClapDataset(Dataset):
         if os.path.exists(out_h5_path) and skip_existing_strong:
             print(f"{out_h5_path} exists, skipped.")
             return
+
+        if os.path.exists(out_h5_path) and skip_recent:
+            modified_datetime = datetime.strptime(time.ctime(os.path.getmtime(out_h5_path)), "%c")
+            current_datetime = datetime.now()
+            timediff = current_datetime - modified_datetime
+            if timediff < timedelta(days=2):
+                print(f"{out_h5_path} exists and is recently modified, skipped.")
+                return
 
         print("\n ===================== \n")
 
@@ -421,8 +431,7 @@ class DacEncodecClapDataset(Dataset):
                     encodec_rvq = torch.tensor(np.array(f[chunkname]['encodec_rvq'])) if 'encodec_rvq' in f[chunkname] else None
                     encodec_latents =torch.tensor( np.array(f[chunkname]['encodec_latents'])) if 'encodec_latents' in f[chunkname] else None
                     audio_clap = torch.tensor(int16_to_float32(np.array(f[chunkname]['audio_clap']))).unsqueeze(0) if 'audio_clap' in f[chunkname] else None
-
-                dac_rvq, dac_latents, encodec_rvq, encodec_latents, audio_clap = self.get_rvq_latents_clap_from_wav(wav, sample_rate) # debug
+                    
                 
                 print(f"Got chunk number {relative_index}")
                 data_dict = {}

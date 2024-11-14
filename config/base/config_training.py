@@ -2,18 +2,18 @@ from config.base.attrdict import AttrDict
 
 config_training_default = AttrDict(
     train_text_clap_load_prob=0.5,
-    train_dataset_size=51200,  # dummy dataset size
-    train_batch_size=64,
+    train_dataset_size=76800,  # dummy dataset size
+    train_batch_size=192,
 
     val_dataset_size=1,  # dummy dataset size
     val_batch_size=1,
 
     ema_decay=0.995,
-    learning_rate=5e-5,
+    learning_rate=8e-4,
     lr_warmup_steps=500,
 
-    checkpoint_every=16000,
-    demo_every=4000,
+    checkpoint_every=400,
+    demo_every=200,
     max_epochs=1000,
     save_top_k=11,
 

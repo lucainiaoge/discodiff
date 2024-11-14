@@ -37,8 +37,11 @@ def create_h5_dataset_given_audio_dir(
             skip_existing_strong = skip_existing_strong
         )
 
-def get_dac_encodec_clap(use_dac = True, use_encodec = True, use_clap = True):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def get_dac_encodec_clap(use_dac = True, use_encodec = True, use_clap = True, device = None):
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device(device)
 
     if use_dac:
         import dac
@@ -79,7 +82,8 @@ def main(args):
     dac_model, encodec_model, clap_model = get_dac_encodec_clap(
         use_dac = not args.no_dac,
         use_encodec = not args.no_encodec,
-        use_clap = not args.no_clap
+        use_clap = not args.no_clap,
+        device = args.device
     )
 
     percent_start_end = (args.percent_start, args.percent_end)
@@ -130,6 +134,9 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--no-audio-chunk', type=bool, default=False,
+    )
+    parser.add_argument(
+        '--device', type=str, default=None,
     )
     args = parser.parse_args()
     main(args)
