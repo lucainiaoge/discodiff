@@ -409,7 +409,7 @@ class DiscodiffLitModel(L.LightningModule):
             list(self.model_primary.parameters()) + list(self.model_secondary.parameters()), 
             lr=self.config.learning_rate
         )
-        num_gpus = 1 if not hasattr(config, "num_gpus") else config.num_gpus
+        num_gpus = 1 if not hasattr(self.config, "num_gpus") else self.config.num_gpus
         if torch.cuda.is_available():
             print(f"There are {num_gpus} gpus available for training in this experiment.")
         lr_scheduler = get_cosine_schedule_with_warmup(
