@@ -9,6 +9,7 @@ from datetime import datetime
 import torch
 import torchaudio
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data._utils.collate import default_collate
 
@@ -30,6 +31,7 @@ from transformers.models.t5.tokenization_t5_fast import T5TokenizerFast
 from typing import Union, Dict
 
 from config.base.attrdict import AttrDict
+from config.load_from_path import load_config_from_path
 from data.h5_dataset import DacEncodecClapDatasetH5
 from models.unet.unet_1d_condition import UNet1DConditionModel
 from pipelines.pipeline_discodiff import dac_latents_normalize, DAC_DIM_SINGLE, DiscodiffPipeline
@@ -38,6 +40,8 @@ from utils import prob_mask_like, get_velocity, set_device_accelerator, pad_last
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(stream=sys.stdout))
+
+# os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def display_chunk_data(chunk_datadict):
     for key in chunk_datadict.keys():
@@ -79,12 +83,22 @@ class DacCLAPDataModule(L.LightningDataModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.train_dataset = DacEncodecClapDatasetH5(
+        train_dataset = DacEncodecClapDatasetH5(
             h5_dir=config.trainset_dir,
             dac_frame_len=config.sample_size,
             dataset_size=config.train_dataset_size,
             random_load=True,
         )
+        if hasattr(config, "additional_trainset_dir"):
+            additional_train_dataset = DacEncodecClapDatasetH5(
+                h5_dir=config.additional_trainset_dir,
+                dac_frame_len=config.sample_size,
+                dataset_size=config.additional_dataset_size,
+                random_load=True,
+            )
+            self.train_dataset = torch.utils.data.ConcatDataset([train_dataset, additional_train_dataset])
+        else:
+            self.train_dataset = train_dataset
         
     # prepare dataset
     def setup(self, stage):
@@ -92,10 +106,11 @@ class DacCLAPDataModule(L.LightningDataModule):
 
     # create train loader
     def train_dataloader(self):
+        num_gpus = 0 if not hasattr(self.config, "num_gpus") else self.config.num_gpus
         return DataLoader(
             self.train_dataset,
             batch_size=self.config.train_batch_size,
-            num_workers=0, 
+            num_workers=0, # set to 0 if bug happens
             pin_memory=True,
             collate_fn=t5_padding_collate_func
         )
@@ -111,7 +126,7 @@ class DacCLAPDataModule(L.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.config.val_batch_size,
-            num_workers=0, 
+            num_workers=0,
             pin_memory=True,
             collate_fn=t5_padding_collate_func
         )
@@ -187,18 +202,24 @@ class DiscodiffLitModel(L.LightningModule):
             param.requires_grad = False
         logger.info("-- Codec and text encoder initialized --")
         
-        self.train_primary_prob = config.train_primary_prob
-        assert self.train_primary_prob >= 0 and self.train_primary_prob <= 1
-
-        self.load_audio_clap_prob = config.load_audio_clap_prob
-        assert self.load_audio_clap_prob >= 0 and self.load_audio_clap_prob <= 1
+        self.update_training_config(config)
         
-        self.loss_fn = torch.nn.L1Loss()
+        # self.loss_fn = torch.nn.L1Loss()
+        self.loss_fn = torch.nn.HuberLoss(reduction='mean', delta=1.0)
 
         self.debug = False
 
         self.save_hyperparameters()
 
+    def update_training_config(self, config: AttrDict):
+        self.config = config
+        
+        self.train_primary_prob = config.train_primary_prob
+        assert self.train_primary_prob >= 0 and self.train_primary_prob <= 1
+
+        self.load_audio_clap_prob = config.load_audio_clap_prob
+        assert self.load_audio_clap_prob >= 0 and self.load_audio_clap_prob <= 1
+    
     @torch.no_grad()
     def get_text_emb_from_input_dict(self, batch: Dict):
         if "randomized_text" not in batch:
@@ -318,8 +339,11 @@ class DiscodiffLitModel(L.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        device = batch["dac_latents"].device
-
+        device = batch["dac_latents"][0].device
+        # print(device, device.type)
+        if not (device == "cuda:0" or device == "cpu"):
+            return {}
+        
         # construct sampling pipeline
         if not hasattr(self, "pipeline"):
             self.pipeline = DiscodiffPipeline(
@@ -409,18 +433,19 @@ class DiscodiffLitModel(L.LightningModule):
         num_gpus = 1 if not hasattr(self.config, "num_gpus") else self.config.num_gpus
         if torch.cuda.is_available():
             print(f"There are {num_gpus} gpus available for training in this experiment.")
-        lr_scheduler = get_cosine_schedule_with_warmup(
+        scheduler = get_cosine_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=self.config.lr_warmup_steps,
-            num_training_steps=int(num_gpus * self.config.train_dataset_size * self.config.max_epochs / self.config.train_batch_size),
+            num_training_steps=int(self.config.train_dataset_size * self.config.max_epochs / self.config.train_batch_size / num_gpus),
         )
+        lr_scheduler = {
+            'scheduler': scheduler, # CosineAnnealingLR(optimizer, T_max=10, eta_min=self.config.learning_rate / 1e2),
+            'interval': 'step', 
+            'frequency': 1,
+        }
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                'scheduler': lr_scheduler,
-                'interval': 'epoch',
-                'frequency': 1
-            }
+            "lr_scheduler": lr_scheduler
         }
 
 def save_demo(
@@ -429,6 +454,8 @@ def save_demo(
     save_path: Union[str, os.PathLike], 
     sample_rate: int,
 ):
+    if len(outputs) == 0:
+        return None, None
     bs = len(batch['name'])
     log_dict = {}
     tabel_columns = ["batch_id"]
@@ -508,6 +535,8 @@ def update_config(args, config: AttrDict):
     config_update = {}
     config_update["trainset_dir"] = args.trainset_dir
     config_update["valset_dir"] = args.valset_dir
+    if args.additional_trainset_dir is not None:
+        config_update["additional_trainset_dir"] = args.additional_trainset_dir
     if args.train_batch_size is not None:
         config_update["train_batch_size"] = args.train_batch_size
     if args.num_val_demos is not None:
@@ -557,6 +586,8 @@ class DemoCallback(L.Callback):
     @torch.no_grad()
     def on_validation_batch_end(self, trainer, module, outputs, batch, batch_idx):
         log_dict, log_table = save_demo(outputs, batch, self.demo_save_path, self.sample_rate)
+        if log_dict is None and log_table is None:
+            return
         if not self.save_table:
             trainer.logger.experiment.log(log_dict, step=trainer.global_step)
         else:
@@ -569,27 +600,17 @@ class DemoCallback(L.Callback):
         self.on_validation_batch_end(trainer, module, outputs, batch, batch_idx)
 
 def main(args):
-    # determine config type according to input
-    config_dir, config_filename = os.path.split(args.config_path)
-    config_name, config_ext = os.path.splitext(config_filename)
-    if config_ext.lower() == ".py":
-        sys.path.append(config_dir)
-        spec=importlib.util.spec_from_file_location("config", args.config_path)
-        foo = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(foo)
-        config = foo.config
-    elif config_ext.lower() == ".json":
-        with open(args.config_path) as data_file:
-            config_dict = json.load(data_file)
-        config = AttrDict(config_dict)
-    else:
-        raise ValueError("Input config_path should be a .py file or a .json file")
+    # get config object
+    config = load_config_from_path(args.config_path)
 
     # constuct save_path
     save_path = os.path.join("results", args.name)
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-        logger.info(f"- Created result path {save_path} \n")
+    try:
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+            logger.info(f"- Created result path {save_path} \n")
+    except:
+        pass
         
     # renew config according to args and save the config
     update_config(args, config)
@@ -606,12 +627,13 @@ def main(args):
     # define lightning module
     if args.load_ckpt_path is not None:
         lightning_module = DiscodiffLitModel.load_from_checkpoint(
-            args.load_ckpt_path,
+            args.load_ckpt_path, config=config,
         )
         logger.info(f"- Lightning module initialized with given checkpoint {args.load_ckpt_path} \n")
     else:
         lightning_module = DiscodiffLitModel(config=config)
         logger.info("- Lightning module initialized without checkpoint loading \n")
+    lightning_module.update_training_config(config)
 
     # define callbacks
     exc_callback = ExceptionCallback()
@@ -672,6 +694,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '-trainset-dir', type=str,
         help='the audio h5 dataset path for training'
+    )
+    parser.add_argument(
+        '--additional-trainset-dir', type=str, nargs='?',
+        help='another audio h5 dataset path for training'
     )
     parser.add_argument(
         '-valset-dir', type=str, nargs='?',

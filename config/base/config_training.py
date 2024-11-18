@@ -3,18 +3,19 @@ from config.base.attrdict import AttrDict
 config_training_default = AttrDict(
     train_text_clap_load_prob=0.5,
     train_dataset_size=76800,  # dummy dataset size
+    additional_dataset_size=7680, # in case the additional dataset is used
     train_batch_size=192,
 
     val_dataset_size=1,  # dummy dataset size
     val_batch_size=1,
 
     ema_decay=0.995,
-    learning_rate=8e-4,
+    learning_rate=1e-5,
     lr_warmup_steps=500,
 
-    checkpoint_every=400,
-    demo_every=200,
-    max_epochs=1000,
+    checkpoint_every=1000,
+    demo_every=500,
+    max_epochs=10000,
     save_top_k=11,
 
     train_primary_prob=0.5,
@@ -27,6 +28,7 @@ config_training_default = AttrDict(
 config_training_debug = AttrDict(
     train_text_clap_load_prob=0.5,
     train_dataset_size=12800,  # dummy dataset size
+    additional_dataset_size=7680, # in case the additional dataset is used
     train_batch_size=128,
 
     val_dataset_size=4,  # dummy dataset size

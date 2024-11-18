@@ -142,3 +142,78 @@ def audio_spectrogram_image(waveform, power=2.0, sample_rate=48000):
     melspec = mel_spectrogram_op(waveform.float().cpu())
     melspec = melspec[0] # TODO: only left channel for now
     return spectrogram_image(melspec, title="MelSpectrogram", ylabel='mel bins (log freq)')
+
+def load_state_dict_partial(
+    target_state_dict, ckpt_state_dict,
+    must_contain = None, dont_contain = None,
+    verbose=False
+):
+    for name, param in ckpt_state_dict.items():
+        if name not in target_state_dict:
+            if verbose: print(f"{name} not in the model state dict")
+            continue
+
+        if isinstance(param, torch.nn.Parameter):
+            param = param.data
+        elif torch.is_tensor(param):
+            pass
+        else:
+            if verbose: print(f"{name} has unrecognized type {str(type(param))}")
+            continue
+
+        if must_contain is not None:
+            if must_contain not in name:
+                print(must_contain, "should be contained. Skipped", name)
+                continue
+
+        if dont_contain is not None:
+            if dont_contain in name:
+                print(dont_contain, "should not be contained. Skipped", name)
+                continue
+
+        try:
+            if target_state_dict[name].shape == param.shape:
+                target_state_dict[name].copy_(param)
+                if verbose: print(f"{name} loaded into model state dict")
+            else:
+                shape_self = target_state_dict[name].shape
+                shape_to_load = param.shape
+                if len(shape_self) != len(shape_to_load):
+                    raise ValueError(
+                        f'Shape {shape_to_load} of loaded param {name} is different from {shape_self}.'
+                    )
+                elif shape_self < shape_to_load:
+                    raise ValueError(
+                        f'Shape {shape_to_load} of loaded param {name} is larger than {shape_self}.'
+                    )
+
+                if len(shape_self) == 1:
+                    target_state_dict[name][:shape_to_load[0]].copy_(param)
+                elif len(shape_self) == 2:
+                    target_state_dict[name][:shape_to_load[0], :shape_to_load[1]].copy_(param)
+                elif len(shape_self) == 3:
+                    target_state_dict[name][:shape_to_load[0], :shape_to_load[1], :shape_to_load[2]].copy_(param)
+                elif len(shape_self) == 4:
+                    target_state_dict[name][:shape_to_load[0], :shape_to_load[1], :shape_to_load[2],
+                    :shape_to_load[3]].copy_(param)
+                else:
+                    raise ValueError(
+                        f'Shape {shape_to_load} of loaded param {name} is different from {shape_self}.'
+                    )
+
+                if verbose:
+                    print(f"{name} with shape {shape_to_load} partially loaded into model, with shape {shape_self}")
+
+        except Exception as e:
+            print(f"error encountered in loading param {name}")
+            print(e)
+
+def load_state_dict_partial_primary_secondary(
+    target_state_dict, ckpt_state_dict_primary, ckpt_state_dict_secondary, verbose=False
+):
+    load_state_dict_partial(
+        target_state_dict, ckpt_state_dict_primary, must_contain = None, verbose=verbose
+    )
+    load_state_dict_partial(
+        target_state_dict, ckpt_state_dict_secondary, must_contain = "secondary", verbose=verbose
+    )
