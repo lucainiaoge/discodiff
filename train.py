@@ -83,26 +83,25 @@ class DacCLAPDataModule(L.LightningDataModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        
+    # prepare dataset
+    def setup(self, stage):
         train_dataset = DacEncodecClapDatasetH5(
-            h5_dir=config.trainset_dir,
-            dac_frame_len=config.sample_size,
-            dataset_size=config.train_dataset_size,
+            h5_dir=self.config.trainset_dir,
+            dac_frame_len=self.config.sample_size,
+            dataset_size=self.config.train_dataset_size,
             random_load=True,
         )
         if hasattr(config, "additional_trainset_dir"):
             additional_train_dataset = DacEncodecClapDatasetH5(
-                h5_dir=config.additional_trainset_dir,
-                dac_frame_len=config.sample_size,
-                dataset_size=config.additional_dataset_size,
+                h5_dir=self.config.additional_trainset_dir,
+                dac_frame_len=self.config.sample_size,
+                dataset_size=self.config.additional_dataset_size,
                 random_load=True,
             )
             self.train_dataset = torch.utils.data.ConcatDataset([train_dataset, additional_train_dataset])
         else:
             self.train_dataset = train_dataset
-        
-    # prepare dataset
-    def setup(self, stage):
-        pass
 
     # create train loader
     def train_dataloader(self):
@@ -132,6 +131,7 @@ class DacCLAPDataModule(L.LightningDataModule):
         )
         
     def test_dataloader(self):
+        assert hasattr(self.config, "testset_dir"), "Must specify testset_dir in config"
         self.test_dataset = DacEncodecClapDatasetH5(
             h5_dir=self.config.testset_dir,
             dac_frame_len=self.config.sample_size,
@@ -340,7 +340,6 @@ class DiscodiffLitModel(L.LightningModule):
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         device = batch["dac_latents"][0].device
-        # print(device, device.type)
         if not (device == "cuda:0" or device == "cpu"):
             return {}
         
@@ -533,8 +532,11 @@ def save_demo(
 
 def update_config(args, config: AttrDict):
     config_update = {}
+    config_update["name"] = args.name
     config_update["trainset_dir"] = args.trainset_dir
     config_update["valset_dir"] = args.valset_dir
+    if hasattr(args, "testset_dir"):
+        config_update["testset_dir"] = args.testset_dir
     if args.additional_trainset_dir is not None:
         config_update["additional_trainset_dir"] = args.additional_trainset_dir
     if args.train_batch_size is not None:
@@ -545,10 +547,6 @@ def update_config(args, config: AttrDict):
         config_update["val_batch_size"] = args.val_batch_size
     if args.val_interval_steps is not None:
         config_update["val_interval_steps"] = args.val_batch_size
-    if args.name is not None:
-        config_update["name"] = args.name
-    else:
-        config_update["name"] = datetime.now().strftime('training-%Y-%m-%d-%H-%M-%S')
     if args.train_primary_prob is not None:
         config_update["train_primary_prob"] = args.train_primary_prob
     if args.load_audio_clap_prob is not None:
@@ -604,6 +602,8 @@ def main(args):
     config = load_config_from_path(args.config_path)
 
     # constuct save_path
+    if args.name is None:
+        args.name = datetime.now().strftime('training-%Y-%m-%d-%H-%M-%S')
     save_path = os.path.join("results", args.name)
     try:
         if not os.path.exists(save_path):
@@ -659,6 +659,7 @@ def main(args):
     force_cpu = (num_gpus == 0)
     device, accelerator = set_device_accelerator(force_cpu=force_cpu)
     strategy = "ddp_find_unused_parameters_true" if args.num_gpus > 1 else "auto"
+    val_interval = config.demo_every if args.do_validation else None
     diffusion_trainer = L.Trainer(
         devices=num_gpus,
         accelerator=accelerator,
@@ -669,7 +670,7 @@ def main(args):
         callbacks=[ckpt_callback, demo_callback, exc_callback],
         logger=wandb_logger,
         log_every_n_steps=1,
-        val_check_interval=config.demo_every, 
+        val_check_interval=val_interval, 
         check_val_every_n_epoch=None,
         max_epochs=config.max_epochs,
         profiler="simple"
@@ -700,7 +701,11 @@ if __name__ == '__main__':
         help='another audio h5 dataset path for training'
     )
     parser.add_argument(
-        '-valset-dir', type=str, nargs='?',
+        '--do-validation', type=bool, default=False,
+        help='whether or not to do validation during training; default to False'
+    )
+    parser.add_argument(
+        '--valset-dir', type=str, nargs='?',
         help='the audio h5 dataset path for validation; if not specified, will use training set to validate'
     )
     parser.add_argument(
