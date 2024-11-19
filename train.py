@@ -129,21 +129,6 @@ class DacCLAPDataModule(L.LightningDataModule):
             pin_memory=True,
             collate_fn=t5_padding_collate_func
         )
-        
-    def test_dataloader(self):
-        assert hasattr(self.config, "testset_dir"), "Must specify testset_dir in config"
-        self.test_dataset = DacEncodecClapDatasetH5(
-            h5_dir=self.config.testset_dir,
-            dac_frame_len=self.config.sample_size,
-            random_load=False,
-        )
-        return DataLoader(
-            self.test_dataset,
-            batch_size=1,
-            num_workers=0, 
-            pin_memory=True,
-            collate_fn=t5_padding_collate_func
-        )
 
 class DiscodiffLitModel(L.LightningModule):
     def __init__(self, config: AttrDict):
@@ -339,9 +324,10 @@ class DiscodiffLitModel(L.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        device = batch["dac_latents"][0].device
-        if not (device == "cuda:0" or device == "cpu"):
-            return {}
+        # device = batch["dac_latents"][0].device
+        # if not (device == "cuda:0" or device == "cpu"):
+        #     return {}
+        device = batch["dac_latents"].device
         
         # construct sampling pipeline
         if not hasattr(self, "pipeline"):
@@ -423,6 +409,10 @@ class DiscodiffLitModel(L.LightningModule):
             "sampled_audios_reconstructed": sampled_audios_reconstructed
         }
         return out_dict
+
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
+        return self.validation_step(batch, batch_idx, dataloader_idx=dataloader_idx)
     
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
@@ -535,8 +525,6 @@ def update_config(args, config: AttrDict):
     config_update["name"] = args.name
     config_update["trainset_dir"] = args.trainset_dir
     config_update["valset_dir"] = args.valset_dir
-    if hasattr(args, "testset_dir"):
-        config_update["testset_dir"] = args.testset_dir
     if args.additional_trainset_dir is not None:
         config_update["additional_trainset_dir"] = args.additional_trainset_dir
     if args.train_batch_size is not None:

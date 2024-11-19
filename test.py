@@ -11,8 +11,19 @@ from lightning.pytorch.loggers import WandbLogger
 
 from config.base.attrdict import AttrDict
 from data.h5_dataset import DacEncodecClapDatasetH5
-from train import DiscodiffLitModel, update_config, check_config, save_config, logger
+from train import DiscodiffLitModel, ExceptionCallback, DemoCallback
+from train import t5_padding_collate_func, check_config, save_config, logger
 from utils import set_device_accelerator
+
+def update_config(args, config: AttrDict):
+    config_update = {}
+    config_update["name"] = args.name
+    config_update["testset_dir"] = args.testset_dir
+    if args.num_gpus is not None:
+        config_update["num_gpus"] = args.num_gpus
+    if args.test_batch_size is not None:
+        config_update["test_batch_size"] = args.test_batch_size
+    config.override(config_update)
 
 def main(args):
     # constuct save_path
@@ -37,6 +48,10 @@ def main(args):
     
     lightning_module.update_training_config(config)
     logger.info(f"- Lightning module initialized with given checkpoint {args.ckpt_path} \n")
+
+    # callbacks
+    exc_callback = ExceptionCallback()
+    demo_callback = DemoCallback(config, save_path)
     
     # create data loader
     test_dataset = DacEncodecClapDatasetH5(
@@ -45,7 +60,7 @@ def main(args):
         random_load=False,
     )
     test_dataloader = DataLoader(
-        self.test_dataset,
+        test_dataset,
         batch_size=1,
         num_workers=0, 
         pin_memory=True,
@@ -69,6 +84,7 @@ def main(args):
         accelerator=accelerator,
         strategy=strategy,
         precision=16,
+        callbacks=[demo_callback, exc_callback],
         logger=wandb_logger,
     )
     logger.info("==============================================")
