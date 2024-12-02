@@ -130,7 +130,7 @@ if __name__ == '__main__':
         '--chunk-dur-sec', type=float, default=27.0,
     )
     parser.add_argument(
-        '--min-sec', type=float, default=28.0,
+        '--min-sec', type=float, default=27.1,
     )
     parser.add_argument(
         '--no-audio-chunk', type=bool, default=False,

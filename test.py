@@ -19,6 +19,10 @@ def update_config(args, config: AttrDict):
     config_update = {}
     config_update["name"] = args.name
     config_update["testset_dir"] = args.testset_dir
+    if args.num_inference_timesteps is not None:
+        config_update["num_inference_timesteps"] = args.num_inference_timesteps
+    if args.cfg_scale is not None:
+        config_update["cfg_scale"] = args.cfg_scale
     if args.num_gpus is not None:
         config_update["num_gpus"] = args.num_gpus
     if args.test_batch_size is not None:
@@ -54,10 +58,16 @@ def main(args):
     demo_callback = DemoCallback(config, save_path)
     
     # create data loader
+    # test_dataset = DacEncodecClapDatasetH5(
+    #     h5_dir=config.testset_dir,
+    #     dac_frame_len=config.sample_size,
+    #     random_load=False,
+    # )
     test_dataset = DacEncodecClapDatasetH5(
         h5_dir=config.testset_dir,
         dac_frame_len=config.sample_size,
-        random_load=False,
+        dataset_size=1,
+        random_load=True,
     )
     test_dataloader = DataLoader(
         test_dataset,
@@ -112,8 +122,16 @@ if __name__ == '__main__':
         help='the number of gpus; will use cpu if set to 0 or negative numbers; normally use 1 gpu'
     )
     parser.add_argument(
+        '--cfg-scale', type=int, nargs='?',
+        help='classifier-free guidance scale, default using config'
+    )
+    parser.add_argument(
         '--test-batch-size', type=int, default=1,
         help='testing batch size under use; normally set to 1'
+    )
+    parser.add_argument(
+        '--num-inference-timesteps', type=int, default=100,
+        help='diffusion inference timesteps, default to 100'
     )
     parser.add_argument(
         '--wandb-key', type=str, nargs='?',
@@ -121,3 +139,5 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
     main(args)
+
+    # TODO: debug sampling loop, print mean and std, compare generated obj and gt obj values

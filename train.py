@@ -20,7 +20,7 @@ from lightning.pytorch.loggers import WandbLogger
 
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
-from diffusers import DPMSolverMultistepScheduler
+from diffusers import DDPMScheduler, DDIMScheduler, DPMSolverMultistepScheduler
 
 import dac
 from dac.model.dac import DAC
@@ -34,6 +34,7 @@ from config.base.attrdict import AttrDict
 from config.load_from_path import load_config_from_path
 from data.h5_dataset import DacEncodecClapDatasetH5
 from models.unet.unet_1d_condition import UNet1DConditionModel
+from models.unet.unet_1d_condition_simple import UNet1DConditionModelSimple
 from pipelines.pipeline_discodiff import dac_latents_normalize, DAC_DIM_SINGLE, DiscodiffPipeline
 from utils import prob_mask_like, get_velocity, set_device_accelerator, pad_last_dim, audio_spectrogram_image
 
@@ -92,7 +93,7 @@ class DacCLAPDataModule(L.LightningDataModule):
             dataset_size=self.config.train_dataset_size,
             random_load=True,
         )
-        if hasattr(config, "additional_trainset_dir"):
+        if hasattr(self.config, "additional_trainset_dir"):
             additional_train_dataset = DacEncodecClapDatasetH5(
                 h5_dir=self.config.additional_trainset_dir,
                 dac_frame_len=self.config.sample_size,
@@ -130,6 +131,11 @@ class DacCLAPDataModule(L.LightningDataModule):
             collate_fn=t5_padding_collate_func
         )
 
+supported_schedulers = {
+    "DDPM": DDPMScheduler, 
+    "DDIM": DDIMScheduler,
+    "DPMSolverMultistep": DPMSolverMultistepScheduler,
+}
 class DiscodiffLitModel(L.LightningModule):
     def __init__(self, config: AttrDict):
         super().__init__()
@@ -152,7 +158,7 @@ class DiscodiffLitModel(L.LightningModule):
             encoder_hid_dim_type = "text_proj",
             time_cond_proj_dim=config.time_embedding_dim,
         )
-        
+
         self.model_secondary = UNet1DConditionModel(
             sample_size=config.sample_size,
             in_channels=config.in_channels_secondary,
@@ -168,10 +174,36 @@ class DiscodiffLitModel(L.LightningModule):
             encoder_hid_dim_type = "text_proj",
             time_cond_proj_dim=config.time_embedding_dim,
         )
+
         
-        self.noise_scheduler = DPMSolverMultistepScheduler(
+        # self.model_secondary = UNet1DConditionModelSimple( # UNet1DConditionModel(
+        #     sample_size=config.sample_size,
+        #     in_channels=config.in_channels_secondary,
+        #     out_channels=config.out_channels_secondary,
+        #     # down_block_types=config.down_block_types,
+        #     # mid_block_type=config.mid_block_type,
+        #     # up_block_types=config.up_block_types,
+        #     down_block_types=config.down_block_types_secondary, # debug
+        #     mid_block_type=config.mid_block_type_secondary, # debug
+        #     up_block_types=config.up_block_types_secondary, # debug
+        #     layers_per_block=config.layers_per_block, # debug
+        #     # block_out_channels=config.block_out_channels,
+        #     block_out_channels=config.block_out_channels_secondary, # debug
+        #     num_class_embeds=config.num_class_embeds + 1, # # the last class for CFG, this place is reserved for key conditioning
+        #     class_embeddings_concat=config.class_embeddings_concat,
+        #     encoder_hid_dim=config.encoder_hid_dim,
+        #     encoder_hid_dim_type = "text_proj",
+        #     time_cond_proj_dim=config.time_embedding_dim,
+        # )
+
+        SchedulerType = supported_schedulers[config.scheduler_type]
+        self.noise_scheduler = SchedulerType(
             num_train_timesteps=config.num_train_timesteps,
             prediction_type=config.prediction_type,
+        )
+        self.noise_scheduler_secondary = SchedulerType(
+            num_train_timesteps=config.num_train_timesteps,
+            prediction_type=config.prediction_type_secondary,
         )
         logger.info("-- Denoise model and scheduler initialized --")
     
@@ -189,10 +221,10 @@ class DiscodiffLitModel(L.LightningModule):
         
         self.update_training_config(config)
         
-        # self.loss_fn = torch.nn.L1Loss()
-        self.loss_fn = torch.nn.HuberLoss(reduction='mean', delta=1.0)
+        self.loss_fn = torch.nn.L1Loss() # debug
+        # self.loss_fn = torch.nn.HuberLoss(reduction='mean', delta=1.0)
 
-        self.debug = False
+        self.debug = False # debug
 
         self.save_hyperparameters()
 
@@ -235,6 +267,12 @@ class DiscodiffLitModel(L.LightningModule):
     def training_step(self, batch: Dict, batch_idx):
         # for checkpoint callback
         self.log('training_step', self.global_step)
+
+        # debug
+        if torch.rand(1) < 0.05:
+            self.debug = True
+        else:
+            self.debug = False
         
         # create ground-truth normalized latents
         train_primary = torch.rand(1) < self.train_primary_prob
@@ -245,39 +283,67 @@ class DiscodiffLitModel(L.LightningModule):
         dac_latents_gt_primary = dac_latents_normalize(dac_latents[...,:DAC_DIM_SINGLE, :], selection="primary")
         dac_latents_gt_secondary = dac_latents_normalize(dac_latents[...,DAC_DIM_SINGLE:, :], selection="secondary") if not train_primary else None
         if self.debug:
-            print(f"dac_latents mean  = {dac_latents.mean().cpu().item()}, var = {dac_latents.var().cpu().item()}")
-            print(f"dac_latents_primary mean  = {dac_latents[...,:DAC_DIM_SINGLE, :].mean().cpu().item()}, var = {dac_latents[...,:DAC_DIM_SINGLE, :].var().cpu().item()}")
-            print(f"dac_latents_secondary mean  = {dac_latents[...,DAC_DIM_SINGLE:, :].mean().cpu().item()}, var = {dac_latents[...,DAC_DIM_SINGLE:, :].var().cpu().item()}")
-            print(f"dac_latents_primary normalized mean  = {dac_latents_gt_primary.mean().cpu().item()}, var = {dac_latents_gt_primary.var().cpu().item()}")
+            if train_primary:
+                print("Training primary")
+            else:
+                print("Training secondary")
+            print(f"dac_latents mean  = {dac_latents[0].mean().cpu().item()}, var = {dac_latents[0].var().cpu().item()}")
+            print(f"dac_latents_primary mean  = {dac_latents[0,:DAC_DIM_SINGLE, :].mean().cpu().item()}, var = {dac_latents[0,:DAC_DIM_SINGLE, :].var().cpu().item()}")
+            print(f"dac_latents_secondary mean  = {dac_latents[0,DAC_DIM_SINGLE:, :].mean().cpu().item()}, var = {dac_latents[0,DAC_DIM_SINGLE:, :].var().cpu().item()}")
+            print(f"dac_latents_primary normalized mean  = {dac_latents_gt_primary[0].mean().cpu().item()}, var = {dac_latents_gt_primary[0].var().cpu().item()}")
             if dac_latents_gt_secondary is not None:
-                print(f"dac_latents_secondary normalized mean  = {dac_latents_gt_secondary.mean().cpu().item()}, var = {dac_latents_gt_secondary.var().cpu().item()}")
+                print(f"dac_latents_secondary normalized mean  = {dac_latents_gt_secondary[0].mean().cpu().item()}, var = {dac_latents_gt_secondary[0].var().cpu().item()}")
         
         # Sample a random timestep for each sample in batch
-        timesteps = torch.randint(
-            0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=device
-        ).long()
+        if train_primary:
+            timesteps = torch.randint(
+                0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=device
+            ).long()
+        else:
+            timesteps = torch.randint(
+                0, self.noise_scheduler_secondary.config.num_train_timesteps, (bs,), device=device
+            ).long()
         
         # create model input
         noise = torch.randn(dac_latents.shape, device=device, dtype=dtype)
         if train_primary:
             noisy_input = self.noise_scheduler.add_noise(dac_latents_gt_primary, noise[...,:DAC_DIM_SINGLE, :], timesteps)
+            if self.debug:
+                print(f"noisy_input mean = {noisy_input[0].mean().cpu().item()}, var = {noisy_input[0].var().cpu().item()}")
         else:
-            noisy_input = self.noise_scheduler.add_noise(dac_latents_gt_secondary, noise[...,DAC_DIM_SINGLE:, :], timesteps)
+            noisy_input = self.noise_scheduler_secondary.add_noise(dac_latents_gt_secondary, noise[...,DAC_DIM_SINGLE:, :], timesteps)
+            if self.debug:
+                print(f"noisy_input mean = {noisy_input[0].mean().cpu().item()}, var = {noisy_input[0].var().cpu().item()}")
             noisy_input = torch.cat((dac_latents_gt_primary, noisy_input), dim=1)
-
+            # noisy_input = self.noise_scheduler_secondary.add_noise(dac_latents_normalize(dac_latents), noise, timesteps) # debug
+        
         # create training target
-        if self.noise_scheduler.config.prediction_type == 'epsilon':
-            target = noise[...,:DAC_DIM_SINGLE, :] if train_primary else noise[...,DAC_DIM_SINGLE:, :]
-        elif self.noise_scheduler.config.prediction_type == 'sample':
-            target = dac_latents_gt_primary if train_primary else dac_latents_gt_secondary
-        elif self.noise_scheduler.config.prediction_type == 'v_prediction':
-            if train_primary:
+        if train_primary:
+            if self.noise_scheduler.config.prediction_type == 'epsilon':
+                target = noise[...,:DAC_DIM_SINGLE, :]
+            elif self.noise_scheduler.config.prediction_type == 'sample':
+                target = dac_latents_gt_primary
+            elif self.noise_scheduler.config.prediction_type == 'v_prediction':
                 target = get_velocity(self.noise_scheduler, sample=dac_latents_gt_primary, noise=noise[...,:DAC_DIM_SINGLE, :], timesteps=timesteps)
             else:
-                target = get_velocity(self.noise_scheduler, sample=dac_latents_gt_secondary, noise=noise[...,DAC_DIM_SINGLE:, :], timesteps=timesteps)
+                assert 0, "Invalid scheduler prediction type"
         else:
-            assert 0, "Invalid scheduler prediction type"
-        
+            if self.noise_scheduler.config.prediction_type == 'epsilon':
+                target = noise[...,DAC_DIM_SINGLE:, :]
+            elif self.noise_scheduler_secondary.config.prediction_type == 'sample':
+                target = dac_latents_gt_secondary
+            elif self.noise_scheduler_secondary.config.prediction_type == 'v_prediction':
+                target = get_velocity(self.noise_scheduler_secondary, sample=dac_latents_gt_secondary, noise=noise[...,DAC_DIM_SINGLE:, :], timesteps=timesteps)
+            else:
+                assert 0, "Invalid scheduler prediction type"
+
+        if self.debug:
+            if train_primary:
+                print(self.noise_scheduler.config.prediction_type)
+            else:
+                print(self.noise_scheduler_secondary.config.prediction_type)
+            print(f"target mean  = {target.mean().cpu().item()}, var = {target.var().cpu().item()}")
+            
         # get clap embedding
         load_audio_clap = torch.rand(1) < self.load_audio_clap_prob
         if load_audio_clap:
@@ -315,10 +381,20 @@ class DiscodiffLitModel(L.LightningModule):
             timestep_cond=clap_emb,
             return_dict=False,
         )[0] # [B, d, L] (primary) or [B, (K-1)d, L] (secondary)
+
+        if self.debug:
+            print(f"model_output mean  = {model_output[0].mean().cpu().item()}, var = {model_output[0].var().cpu().item()}")
         
         # compute loss
-        loss = self.loss_fn(model_output, target)
+        main_loss = self.loss_fn(model_output, target)
+        aux_loss = torch.abs(model_output.var() / target.var() - 1)
+        if self.debug:
+            print(f"timestep = {timesteps[0]}")
+            print(f"main_loss = {main_loss.cpu().item()}, aux_loss = {aux_loss.cpu().item()}")
+        loss = main_loss + 0.1 * aux_loss
         self.log('loss', loss, prog_bar=True)
+        self.log('main_loss', main_loss, prog_bar=True)
+        self.log('aux_loss', aux_loss, prog_bar=True)
         
         return loss
 
@@ -338,6 +414,7 @@ class DiscodiffLitModel(L.LightningModule):
                 model_primary=self.model_primary, 
                 model_secondary=self.model_secondary,
                 scheduler=self.noise_scheduler,
+                scheduler_secondary=self.noise_scheduler_secondary,
             )
             self.pipeline.to_device(device)
 
@@ -350,6 +427,7 @@ class DiscodiffLitModel(L.LightningModule):
         prompt_embeds_clap_audio = batch["audio_clap"] if "audio_clap" in batch else None
 
         # sample validation audio
+        print("Sampling with default process: both primary and secondary given text embeddings...")
         sampled_audios_default = self.pipeline(
             num_inference_steps = self.config.num_inference_timesteps,
             guidance_scale = self.config.cfg_scale,
@@ -363,7 +441,7 @@ class DiscodiffLitModel(L.LightningModule):
             use_audio_clap = False,
             return_dict = True,
         ).audios
-        
+        print("Sampling both primary and secondary given text embeddings and audio CLAP embedding...")
         sampled_audios_given_audio_clap = self.pipeline(
             num_inference_steps = self.config.num_inference_timesteps,
             guidance_scale = self.config.cfg_scale,
@@ -377,7 +455,7 @@ class DiscodiffLitModel(L.LightningModule):
             use_audio_clap = True,
             return_dict = True,
         ).audios
-        
+        print("Sampling primary given secondary and text embeddings...")
         sampled_audios_given_primary = self.pipeline(
             num_inference_steps = self.config.num_inference_timesteps,
             guidance_scale = self.config.cfg_scale,
@@ -396,7 +474,12 @@ class DiscodiffLitModel(L.LightningModule):
             use_audio_clap = False,
             return_dict = True,
         ).audios
+        print("Reconstructing the ground-truth DAC latents...")
 
+        # debug
+        print("Ground-truth primary latent:", batch["dac_latents"][:,:DAC_DIM_SINGLE].mean().cpu().item(), batch["dac_latents"][:,:DAC_DIM_SINGLE].var().cpu().item())
+        print("Ground-truth secondary latents:", batch["dac_latents"][:,DAC_DIM_SINGLE:].mean().cpu().item(), batch["dac_latents"][:,DAC_DIM_SINGLE:].var().cpu().item())
+        print("Ground-truth dac_latents:", batch["dac_latents"].mean().cpu().item(), batch["dac_latents"].var().cpu().item())
         z = self.dac_model.quantizer.from_latents(batch["dac_latents"])[0] # [B, D, L]
         sampled_audios_reconstructed = self.dac_model.decode(z).squeeze(1) # [B, T] # debug
         if torch.abs(sampled_audios_reconstructed).max() > 1:
@@ -525,6 +608,7 @@ def update_config(args, config: AttrDict):
     config_update["name"] = args.name
     config_update["trainset_dir"] = args.trainset_dir
     config_update["valset_dir"] = args.valset_dir
+    config_update["scheduler_type"] = args.scheduler_type
     if args.additional_trainset_dir is not None:
         config_update["additional_trainset_dir"] = args.additional_trainset_dir
     if args.train_batch_size is not None:
@@ -541,6 +625,12 @@ def update_config(args, config: AttrDict):
         config_update["load_audio_clap_prob"] = args.load_audio_clap_prob
     if args.ckpt_save_top_k is not None:
         config_update["save_top_k"] = args.ckpt_save_top_k
+    if args.prediction_type is not None:
+        config_update["prediction_type"] = args.prediction_type
+    if args.prediction_type_secondary is not None:
+        config_update["prediction_type_secondary"] = args.prediction_type_secondary
+    else:
+        config_update["prediction_type_secondary"] = args.prediction_type
     if args.num_gpus is not None:
         config_update["num_gpus"] = args.num_gpus
     config.override(config_update)
@@ -648,6 +738,10 @@ def main(args):
     device, accelerator = set_device_accelerator(force_cpu=force_cpu)
     strategy = "ddp_find_unused_parameters_true" if args.num_gpus > 1 else "auto"
     val_interval = config.demo_every if args.do_validation else None
+    if args.do_validation:
+        callbacks=[ckpt_callback, demo_callback, exc_callback]
+    else:
+        callbacks=[ckpt_callback, exc_callback],
     diffusion_trainer = L.Trainer(
         devices=num_gpus,
         accelerator=accelerator,
@@ -655,7 +749,7 @@ def main(args):
         precision=16,
         accumulate_grad_batches=1, 
         gradient_clip_val=0.5, 
-        callbacks=[ckpt_callback, demo_callback, exc_callback],
+        callbacks=callbacks,
         logger=wandb_logger,
         log_every_n_steps=1,
         val_check_interval=val_interval, 
@@ -731,6 +825,18 @@ if __name__ == '__main__':
     parser.add_argument(
         '--load-audio-clap-prob', type=float, nargs='?',
         help='the probability to load audio clap instead of text clap for training; if not specified, then use config'
+    )
+    parser.add_argument(
+        '--prediction-type', type=str, nargs='?',
+        help='the target of diffusion model'
+    )
+    parser.add_argument(
+        '--prediction-type-secondary', type=str, nargs='?',
+        help='the target of secondary diffusion model'
+    )
+    parser.add_argument(
+        '--scheduler-type', type=str, default="DPMSolverMultistep",
+        help='the diffusion model type, choose from ["DDPM", "DDIM", "DPMSolverMultistep"]'
     )
     parser.add_argument(
         '--ckpt-save-top-k', type=int, nargs='?',

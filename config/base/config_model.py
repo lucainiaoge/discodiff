@@ -37,6 +37,22 @@ config_model_default = AttrDict(
         "CrossAttnUpBlock1D"
     ),
     block_out_channels = (128, 128, 256, 256, 512, 512),
+
+    down_block_types_secondary = (
+        "AttnDownBlock1D",
+        "AttnDownBlock1D",
+        "AttnDownBlock1D",
+        "AttnDownBlock1D"
+    ),
+    mid_block_type_secondary = "UNetMidBlock1D",
+    up_block_types_secondary = (
+        "AttnUpBlock1D",
+        "AttnUpBlock1D",
+        "AttnUpBlock1D",
+        "AttnUpBlock1D",
+    ),
+    block_out_channels_secondary = (128, 256, 512, 1024),
+    
     layers_per_block = 2,
     num_class_embeds = 24,
     class_embeddings_concat = False,

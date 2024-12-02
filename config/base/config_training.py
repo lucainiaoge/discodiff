@@ -13,9 +13,9 @@ config_training_default = AttrDict(
     learning_rate=1e-5,
     lr_warmup_steps=500,
 
-    checkpoint_every=1000,
-    demo_every=500,
-    max_epochs=10000,
+    checkpoint_every=1100,
+    demo_every=2200,
+    max_epochs=20000,
     save_top_k=11,
 
     train_primary_prob=0.5,

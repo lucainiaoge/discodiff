@@ -415,9 +415,9 @@ class DacEncodecClapDataset(Dataset):
                     spectrogram = librosa.feature.melspectrogram(
                         S=powergram, sr=self.sample_rate, n_mels=self.mel_freq_bins
                     )
-                    chromagram = librosa.feature.chroma_stft(S=powergram, sr=self.sample_rate)
+                    chromagram = torch.tensor(librosa.feature.chroma_stft(S=powergram, sr=self.sample_rate))
                     spectrogram_dB = librosa.power_to_db(spectrogram)
-                    spectrogram_dB = spectrogram_dB / SPECTROGRAM_NORMALIZATION_FACTOR
+                    spectrogram_dB = torch.tensor(spectrogram_dB / SPECTROGRAM_NORMALIZATION_FACTOR)
                     
                     dac_rvq, dac_latents, encodec_rvq, encodec_latents, audio_clap = self.get_rvq_latents_clap_from_wav(wav, sample_rate)
                     
@@ -754,7 +754,7 @@ class DacEncodecClapDatasetH5(Dataset):
                 num_chunks = num_chunks - 1
             if "metadata" in f:
                 num_chunks = num_chunks - 1
-
+                
             if num_chunks <= 0: 
             # in case the hdf5 file do not contain any audio chunk, load another h5 file to avoid stopping
                 return self.get_objects(index + 1)

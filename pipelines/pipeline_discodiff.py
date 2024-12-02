@@ -182,6 +182,7 @@ class DiscodiffPipeline(DiffusionPipeline):
         model_primary: UNet1DConditionModel, 
         model_secondary: UNet1DConditionModel,
         scheduler: DPMSolverMultistepScheduler,
+        scheduler_secondary: DPMSolverMultistepScheduler,
         clap_model: Optional[ClapModel] = None,
         clap_processor: Optional[ClapProcessor] = None,
     ):
@@ -193,6 +194,7 @@ class DiscodiffPipeline(DiffusionPipeline):
             model_primary=model_primary, 
             model_secondary=model_secondary,
             scheduler=scheduler,
+            scheduler_secondary=scheduler_secondary,
             clap_model=clap_model,
             clap_processor=clap_processor
         )
@@ -530,7 +532,7 @@ class DiscodiffPipeline(DiffusionPipeline):
                 f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
-
+        
         if latents is None:
             latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
             # scale the initial noise by the standard deviation required by the scheduler
@@ -712,6 +714,7 @@ class DiscodiffPipeline(DiffusionPipeline):
                 If `return_dict` is `True`, [`~pipelines.AudioPipelineOutput`] is returned, otherwise a `tuple` is
                 returned where the first element is a list with the generated audios
         """
+        self.debug = False
 
         # 0. Default sample_size to unet
         sample_size = sample_size or self.model_primary.config.sample_size
@@ -817,6 +820,10 @@ class DiscodiffPipeline(DiffusionPipeline):
             primary_latents,
         )
 
+        if self.debug:
+            print("primary_latents before loop", primary_latents.mean().cpu().item(), primary_latents.mean().cpu().item()) # debug
+
+        
         '''
         # 6. Optionally get Guidance Scale Embedding, not supported currently
         guidance_scale_emb = None
@@ -839,6 +846,7 @@ class DiscodiffPipeline(DiffusionPipeline):
         for t in self.progress_bar(timesteps):
             if not do_primary_loop:
                 break
+            
             # expand the latents if we are doing classifier free guidance
             primary_latent_input = torch.cat([primary_latents] * 2) if self.do_classifier_free_guidance else primary_latents
             primary_latent_input = self.scheduler.scale_model_input(primary_latent_input, t)
@@ -857,18 +865,24 @@ class DiscodiffPipeline(DiffusionPipeline):
                 primary_pred_uncond, primary_pred_cond = primary_pred.chunk(2)
                 primary_pred = primary_pred_uncond + self.guidance_scale * (primary_pred_cond - primary_pred_uncond)
 
-            if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                primary_pred = rescale_noise_cfg(primary_pred, primary_pred_cond, guidance_rescale=self.guidance_rescale)
+            # debug
+            # if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+            #     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+            #     primary_pred = rescale_noise_cfg(primary_pred, primary_pred_cond, guidance_rescale=self.guidance_rescale)
+
+            if t == timesteps[1] or t == timesteps[-1] and self.debug:
+                print(f"Primary loop: primary_pred at timestep {t}", primary_pred.mean().cpu().item(), primary_pred.var().cpu().item()) # debug
 
             # compute the previous noisy sample x_t -> x_t-1
-            primary_latents = self.scheduler.step(primary_pred, t, primary_latents, **extra_step_kwargs, return_dict=False)[0]
+            primary_latents = self.scheduler.step(primary_pred, t, primary_latents, **extra_step_kwargs).prev_sample
+
+            if t == timesteps[1] or t == timesteps[-1] and self.debug:
+                print(f"Primary loop: primary_latents after timestep {t}", primary_latents.mean().cpu().item(), primary_latents.var().cpu().item()) # debug
 
         # 7. Re-prepare timesteps if primary loop is implemented
-        if do_primary_loop:
-            timesteps, num_inference_steps = retrieve_timesteps(
-                self.scheduler, num_inference_steps, device, timesteps_given, sigmas
-            )
+        timesteps, num_inference_steps = retrieve_timesteps(
+            self.scheduler_secondary, num_inference_steps, device, timesteps_given, sigmas
+        )
 
         # 8. Prepare latent variables (secondary)
         if secondary_latents is not None:
@@ -883,16 +897,20 @@ class DiscodiffPipeline(DiffusionPipeline):
             generator,
             secondary_latents,
         )
+
+        print("secondary_latents before loop", secondary_latents.mean().cpu().item(), secondary_latents.var().cpu().item()) # debug
         
         # 9. Denoising loop (secondary)
         self._num_timesteps = len(timesteps)
+
+        print(timesteps)
         for t in self.progress_bar(timesteps):
             # attach gt/sampled primary_latents as fixed conditioned
             secondary_latent_input = torch.cat([primary_latents, secondary_latents], dim=1) # [B, (1+K-1)d, L]
             
             # expand the latents if we are doing classifier free guidance
             secondary_latent_input = torch.cat([secondary_latent_input] * 2) if self.do_classifier_free_guidance else secondary_latent_input
-            secondary_latent_input = self.scheduler.scale_model_input(secondary_latent_input, t)
+            secondary_latent_input = self.scheduler_secondary.scale_model_input(secondary_latent_input, t)
             
             # predict the noise residual
             secondary_pred = self.model_secondary(
@@ -906,19 +924,39 @@ class DiscodiffPipeline(DiffusionPipeline):
             # perform guidance
             if self.do_classifier_free_guidance:
                 secondary_pred_uncond, secondary_pred_cond = secondary_pred.chunk(2)
+                if self.debug:
+                    print(f"Secondary loop: input primary_latents at timestep {t}", primary_latents.mean().cpu().item(), primary_latents.var().cpu().item())
+                    print(f"Secondary loop: direct secondary_pred at timestep {t}", secondary_pred_cond.mean().cpu().item(), secondary_pred_cond.var().cpu().item()) # debug
+                    print(f"Secondary loop: uncon secondary_pred at timestep {t}", secondary_pred_uncond.mean().cpu().item(), secondary_pred_uncond.var().cpu().item()) # debug
                 secondary_pred = secondary_pred_uncond + self.guidance_scale * (secondary_pred_cond - secondary_pred_uncond)
 
-            if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                secondary_pred = rescale_noise_cfg(secondary_pred, secondary_pred_cond, guidance_rescale=self.guidance_rescale)
+            # debug
+            # if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+            #     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+            #     secondary_pred = rescale_noise_cfg(secondary_pred, secondary_pred_cond, guidance_rescale=self.guidance_rescale)
 
+            if self.debug:
+                print(f"Secondary loop: secondary_pred at timestep {t}", secondary_pred.mean().cpu().item(), secondary_pred.var().cpu().item()) # debug
+            
             # compute the previous noisy sample x_t -> x_t-1
-            secondary_latents = self.scheduler.step(secondary_pred, t, secondary_latents, **extra_step_kwargs, return_dict=False)[0]
+            secondary_latents = self.scheduler_secondary.step(secondary_pred, t, secondary_latents, **extra_step_kwargs).prev_sample
+
+            if self.debug:
+                print(f"Secondary loop: secondary_latents after timestep {t}", secondary_latents.mean().cpu().item(), secondary_latents.var().cpu().item()) # debug
 
         # 10. Get final latents and decode to audio
         latents = torch.cat([primary_latents, secondary_latents], dim=1) # [B, Kd, L]
+
+        if self.debug:
+            print(f"Generated latents", latents.mean().cpu().item(), latents.var().cpu().item()) # debug
         
         final_latents = dac_latents_denormalize(latents)
+
+        if self.debug:
+            print(f"Generated final primary latents", final_latents[:,:DAC_DIM_SINGLE].mean().cpu().item(), final_latents[:,:DAC_DIM_SINGLE].var().cpu().item()) # debug
+            print(f"Generated final secondary latents", final_latents[:,DAC_DIM_SINGLE:].mean().cpu().item(), final_latents[:,DAC_DIM_SINGLE:].var().cpu().item()) # debug
+            print(f"Generated final latents", final_latents.mean().cpu().item(), final_latents.var().cpu().item()) # debug
+        
         z = self.dac_model.quantizer.from_latents(final_latents)[0] # [B, D, L]
         wav_sampled = self.dac_model.decode(z).squeeze(1) # [B, T]
         if torch.abs(wav_sampled).max() > 1:
