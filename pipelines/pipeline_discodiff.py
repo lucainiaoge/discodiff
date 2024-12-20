@@ -901,10 +901,9 @@ class DiscodiffPipeline(DiffusionPipeline):
                 primary_pred_uncond, primary_pred_cond = primary_pred.chunk(2)
                 primary_pred = primary_pred_uncond + self.guidance_scale * (primary_pred_cond - primary_pred_uncond)
 
-            # debug
-            # if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-            #     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-            #     primary_pred = rescale_noise_cfg(primary_pred, primary_pred_cond, guidance_rescale=self.guidance_rescale)
+            if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                primary_pred = rescale_noise_cfg(primary_pred, primary_pred_cond, guidance_rescale=self.guidance_rescale)
 
             if t == timesteps[1] or t == timesteps[-1] and self.debug:
                 print(f"Primary loop: primary_pred at timestep {t}", primary_pred.mean().cpu().item(), primary_pred.var().cpu().item()) # debug

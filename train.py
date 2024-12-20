@@ -81,7 +81,7 @@ def t5_padding_collate_func(batch, debug = False):
 
     return default_collate(batch)
 
-def importance_sampling(timesteps, batch_size, timestep_schedule="cosine", epsilon=2e-1, device="cpu"):
+def importance_sampling(timesteps, batch_size, timestep_schedule="cosine", epsilon=9e-1, device="cpu"):
     """
     Generate importance-sampled probabilities for timesteps.
     
@@ -183,45 +183,24 @@ class DiscodiffLitModel(L.LightningModule):
             up_block_types=config.up_block_types,
             layers_per_block=config.layers_per_block,
             block_out_channels=config.block_out_channels,
-            # num_class_embeds=config.num_class_embeds + 1, # the last class for CFG, this place is reserved for key conditioning # debug: disable class emb
-            # class_embeddings_concat=config.class_embeddings_concat, # debug: disable class emb
+            # num_class_embeds=config.num_class_embeds + 1, # the last class for CFG, this place is reserved for key conditioning # disable class emb
+            # class_embeddings_concat=config.class_embeddings_concat, # disable class emb
             encoder_hid_dim=config.encoder_hid_dim,
             encoder_hid_dim_type = "text_proj",
             time_cond_proj_dim=config.time_embedding_dim,
         )
 
-        # self.model_secondary = UNet1DConditionModel(
-        #     sample_size=config.sample_size,
-        #     in_channels=config.in_channels_secondary,
-        #     out_channels=config.out_channels_secondary,
-        #     down_block_types=config.down_block_types,
-        #     mid_block_type=config.mid_block_type,
-        #     up_block_types=config.up_block_types,
-        #     layers_per_block=config.layers_per_block,
-        #     block_out_channels=config.block_out_channels,
-        #     num_class_embeds=config.num_class_embeds + 1, # # the last class for CFG, this place is reserved for key conditioning
-        #     class_embeddings_concat=config.class_embeddings_concat,
-        #     encoder_hid_dim=config.encoder_hid_dim,
-        #     encoder_hid_dim_type = "text_proj",
-        #     time_cond_proj_dim=config.time_embedding_dim,
-        # )
-
-        #  debug
-        self.model_secondary = UNet1DConditionModel( # UNet1DConditionModelSimple( 
+        self.model_secondary = UNet1DConditionModel(
             sample_size=config.sample_size,
             in_channels=config.in_channels_secondary,
             out_channels=config.out_channels_secondary,
-            # down_block_types=config.down_block_types,
-            # mid_block_type=config.mid_block_type,
-            # up_block_types=config.up_block_types,
-            down_block_types=config.down_block_types_secondary, # debug
-            mid_block_type=config.mid_block_type_secondary, # debug
-            up_block_types=config.up_block_types_secondary, # debug
-            layers_per_block=config.layers_per_block, # debug
-            # block_out_channels=config.block_out_channels,
-            block_out_channels=config.block_out_channels_secondary, # debug
-            # num_class_embeds=config.num_class_embeds + 1, # # the last class for CFG, this place is reserved for key conditioning  # debug: disable class emb
-            # class_embeddings_concat=config.class_embeddings_concat,  # debug: disable class emb
+            down_block_types=config.down_block_types_secondary,
+            mid_block_type=config.mid_block_type_secondary,
+            up_block_types=config.up_block_types_secondary,
+            layers_per_block=config.layers_per_block,
+            block_out_channels=config.block_out_channels_secondary,
+            # num_class_embeds=config.num_class_embeds + 1, # # the last class for CFG, this place is reserved for key conditioning  # disable class emb
+            # class_embeddings_concat=config.class_embeddings_concat,  # disable class emb
             encoder_hid_dim=config.encoder_hid_dim,
             encoder_hid_dim_type = "text_proj",
             time_cond_proj_dim=config.time_embedding_dim,
@@ -307,7 +286,7 @@ class DiscodiffLitModel(L.LightningModule):
         self.log('training_step', self.global_step)
 
         # debug
-        if torch.rand(1) < 0.05:
+        if torch.rand(1) < 0.02:
             self.debug = True
         else:
             self.debug = False
@@ -334,17 +313,9 @@ class DiscodiffLitModel(L.LightningModule):
         
         # Sample a random timestep for each sample in batch
         if train_primary:
-            # timesteps = torch.randint(
-            #     0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=device
-            # ).long() # debug
-
-            timesteps = importance_sampling(self.noise_scheduler.config.num_train_timesteps, bs, device=device) # debug
+            timesteps = importance_sampling(self.noise_scheduler.config.num_train_timesteps, bs, device=device)
         else:
-            # timesteps = torch.randint(
-            #     0, self.noise_scheduler_secondary.config.num_train_timesteps, (bs,), device=device
-            # ).long()
-
-            timesteps = importance_sampling(self.noise_scheduler_secondary.config.num_train_timesteps, bs, device=device) # debug
+            timesteps = importance_sampling(self.noise_scheduler_secondary.config.num_train_timesteps, bs, device=device)
         
         # create model input
         noise = torch.randn(dac_latents.shape, device=device, dtype=dtype)
@@ -361,7 +332,6 @@ class DiscodiffLitModel(L.LightningModule):
                 diff_input = noisy_input-dac_latents_gt_secondary
                 print(f"noisy_input - gt_obj mean = {diff_input[0].mean().cpu().item()}, var = {diff_input[0].var().cpu().item()}")
             noisy_input = torch.cat((dac_latents_gt_primary, noisy_input), dim=1)
-            # noisy_input = self.noise_scheduler_secondary.add_noise(dac_latents_normalize(dac_latents), noise, timesteps) # debug
         
         # create training target
         if train_primary:
@@ -372,16 +342,16 @@ class DiscodiffLitModel(L.LightningModule):
             elif self.noise_scheduler.config.prediction_type == 'v_prediction':
                 target = get_velocity(self.noise_scheduler, sample=dac_latents_gt_primary, noise=noise[...,:DAC_DIM_SINGLE, :], timesteps=timesteps)
             else:
-                assert 0, "Invalid scheduler prediction type"
+                assert 0, "Invalid primary scheduler prediction type"
         else:
-            if self.noise_scheduler.config.prediction_type == 'epsilon':
+            if self.noise_scheduler_secondary.config.prediction_type == 'epsilon':
                 target = noise[...,DAC_DIM_SINGLE:, :]
             elif self.noise_scheduler_secondary.config.prediction_type == 'sample':
                 target = dac_latents_gt_secondary
             elif self.noise_scheduler_secondary.config.prediction_type == 'v_prediction':
                 target = get_velocity(self.noise_scheduler_secondary, sample=dac_latents_gt_secondary, noise=noise[...,DAC_DIM_SINGLE:, :], timesteps=timesteps)
             else:
-                assert 0, "Invalid scheduler prediction type"
+                assert 0, "Invalid secondary scheduler prediction type"
 
         if self.debug:
             if train_primary:
@@ -434,11 +404,10 @@ class DiscodiffLitModel(L.LightningModule):
         # compute loss
         main_loss = self.loss_fn(model_output, target)
         aux_loss = torch.abs(model_output.var() / target.var() - 1)
-        # aux_loss = 0 # debug
         if self.debug:
             print(f"timestep = {timesteps[0]}")
             print(f"main_loss = {main_loss.cpu().item()}, aux_loss = {aux_loss.cpu().item()}")
-        loss = main_loss + 0.1 * aux_loss
+        loss = main_loss + 0.05 * aux_loss
         self.log('loss', loss, prog_bar=True)
         self.log('main_loss', main_loss, prog_bar=True)
         self.log('aux_loss', aux_loss, prog_bar=True)
@@ -447,9 +416,6 @@ class DiscodiffLitModel(L.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        # device = batch["dac_latents"][0].device
-        # if not (device == "cuda:0" or device == "cpu"):
-        #     return {}
         device = batch["dac_latents"].device
         
         # construct sampling pipeline
@@ -523,20 +489,15 @@ class DiscodiffLitModel(L.LightningModule):
         )
         print("Reconstructing the ground-truth DAC latents...")
 
-        # debug
-        print("Ground-truth primary latent:", batch["dac_latents"][:,:DAC_DIM_SINGLE].mean().cpu().item(), batch["dac_latents"][:,:DAC_DIM_SINGLE].var().cpu().item())
-        print("Ground-truth secondary latents:", batch["dac_latents"][:,DAC_DIM_SINGLE:].mean().cpu().item(), batch["dac_latents"][:,DAC_DIM_SINGLE:].var().cpu().item())
-        print("Ground-truth dac_latents:", batch["dac_latents"].mean().cpu().item(), batch["dac_latents"].var().cpu().item())
-        print("Ground-truth latents shape", batch["dac_latents"].shape)
+        if self.debug:
+            print("Ground-truth primary latent:", batch["dac_latents"][:,:DAC_DIM_SINGLE].mean().cpu().item(), batch["dac_latents"][:,:DAC_DIM_SINGLE].var().cpu().item())
+            print("Ground-truth secondary latents:", batch["dac_latents"][:,DAC_DIM_SINGLE:].mean().cpu().item(), batch["dac_latents"][:,DAC_DIM_SINGLE:].var().cpu().item())
+            print("Ground-truth dac_latents:", batch["dac_latents"].mean().cpu().item(), batch["dac_latents"].var().cpu().item())
+            print("Ground-truth latents shape", batch["dac_latents"].shape)
         z = self.dac_model.quantizer.from_latents(batch["dac_latents"])[0] # [B, D, L]
         sampled_audios_reconstructed = self.dac_model.decode(z).squeeze(1) # [B, T] # debug
         if torch.abs(sampled_audios_reconstructed).max() > 1:
             sampled_audios_reconstructed = sampled_audios_reconstructed / torch.abs(sampled_audios_reconstructed).max()
-
-        sampled_z_given_primary = self.dac_model.quantizer.from_latents(sampled_latents_given_primary)[0] # [B, D, L]
-        sampled_audios_given_primary = self.dac_model.decode(sampled_z_given_primary).squeeze(1) # [B, T] # debug
-        if torch.abs(sampled_audios_given_primary).max() > 1:
-            sampled_audios_given_primary = sampled_audios_given_primary / torch.abs(sampled_audios_given_primary).max()
         
         out_dict = {
             "sampled_audios_default": sampled_audios_default,
@@ -792,7 +753,8 @@ def main(args):
     force_cpu = (num_gpus == 0)
     device, accelerator = set_device_accelerator(force_cpu=force_cpu)
     strategy = "ddp_find_unused_parameters_true" if args.num_gpus > 1 else "auto"
-    val_interval = config.demo_every if args.do_validation else int(config.max_epochs * config.demo_every)
+    val_interval = config.demo_every if args.do_validation else None
+    limit_val_batches = None if args.do_validation else 0.0
     if args.do_validation:
         callbacks=[ckpt_callback, demo_callback, exc_callback]
     else:
@@ -808,6 +770,7 @@ def main(args):
         logger=wandb_logger,
         log_every_n_steps=1,
         val_check_interval=val_interval, 
+        limit_val_batches=limit_val_batches,
         check_val_every_n_epoch=None,
         max_epochs=config.max_epochs,
         profiler="simple"
