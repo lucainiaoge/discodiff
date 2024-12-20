@@ -1,7 +1,10 @@
 import torch
 import inspect
+import numpy as np
+from dataclasses import dataclass
+from diffusers.utils import BaseOutput
 from diffusers.utils.torch_utils import randn_tensor
-from diffusers import DiffusionPipeline, AudioPipelineOutput
+from diffusers import DiffusionPipeline
 from diffusers import DPMSolverMultistepScheduler
 from typing import Optional, Tuple, Union, List, Callable
 
@@ -11,6 +14,19 @@ from transformers.models.t5.tokenization_t5_fast import T5TokenizerFast
 from transformers import ClapModel, ClapProcessor
 from models.unet.unet_1d_condition import UNet1DConditionModel
 from utils import convert_audio
+
+@dataclass
+class AudioPipelineOutput(BaseOutput):
+    """
+    Output class for audio pipelines.
+
+    Args:
+        audios (`np.ndarray`)
+            List of denoised audio samples of a NumPy array of shape `(batch_size, num_channels, sample_rate)`.
+    """
+
+    audios: np.ndarray
+    latents: Optional[torch.Tensor]
 
 # the following codebook-specific normalization is deprecated
 # but do not delete them, because the dimensions are of use
@@ -155,8 +171,9 @@ def retrieve_timesteps(
         timesteps = scheduler.timesteps
         num_inference_steps = len(timesteps)
     else:
-        scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
+        scheduler.set_timesteps(num_inference_steps=num_inference_steps, device=device, **kwargs)
         timesteps = scheduler.timesteps
+    # timesteps[0] = timesteps[0] - 1 # debug
     return timesteps, num_inference_steps
 
 class DiscodiffPipeline(DiffusionPipeline):
@@ -542,6 +559,29 @@ class DiscodiffPipeline(DiffusionPipeline):
             
         return latents
 
+    # def prepare_class_labels(
+    #     self, 
+    #     batch_size,
+    #     device,    
+    #     num_audios_per_prompt:int = 1, 
+    #     class_labels: Optional[torch.LongTensor] = None,
+    #     do_classifier_free_guidance: bool = True,
+    # ):
+    #     if class_labels is None:
+    #         # TODO: rand sample or always null?
+    #         class_labels = torch.randint(
+    #             low=0, high=self.model_primary.config.num_class_embeds - 1, size=(batch_size,)
+    #         ).long().to(self.device)
+            
+    #         class_labels = torch.ones(batch_size).long().to(self.device) * (self.model_primary.config.num_class_embeds - 1) # debug
+    #         # return None
+    #     else:
+    #         class_labels = class_labels.long().to(self.device)
+    #         class_labels = class_labels.repeat_interleave(num_audios_per_prompt, dim=0)
+    #         null_class_labels = (class_labels - class_labels) + self.model_primary.config.num_class_embeds - 1  # already +1 in unet
+    #         class_labels = torch.cat([null_class_labels, class_labels], dim=0) if do_classifier_free_guidance else class_labels
+    #     return class_labels
+
     def prepare_class_labels(
         self, 
         batch_size,
@@ -551,17 +591,13 @@ class DiscodiffPipeline(DiffusionPipeline):
         do_classifier_free_guidance: bool = True,
     ):
         if class_labels is None:
-            # TODO: rand sample or always null?
-            # class_labels = torch.randint(
-            #     low=0, high=self.model_primary.config.num_class_embeds - 1, size=(batch_size,)
-            # ).long().to(self.device)
-            class_labels = torch.ones(batch_size).long().to(self.device) * (self.model_primary.config.num_class_embeds - 1)
+            return None
         else:
             class_labels = class_labels.long().to(self.device)
-        class_labels = class_labels.repeat_interleave(num_audios_per_prompt, dim=0)
-        null_class_labels = (class_labels - class_labels) + self.model_primary.config.num_class_embeds - 1  # already +1 in unet
-        class_labels = torch.cat([null_class_labels, class_labels], dim=0) if do_classifier_free_guidance else class_labels
-        return class_labels
+            class_labels = class_labels.repeat_interleave(num_audios_per_prompt, dim=0)
+            null_class_labels = (class_labels - class_labels) + self.model_primary.config.num_class_embeds - 1  # already +1 in unet
+            class_labels = torch.cat([null_class_labels, class_labels], dim=0) if do_classifier_free_guidance else class_labels
+            return class_labels
     
     # Copied from diffusers.pipelines.latent_consistency_models.pipeline_latent_consistency_text2img.LatentConsistencyModelPipeline.get_guidance_scale_embedding
     def get_guidance_scale_embedding(
@@ -714,7 +750,7 @@ class DiscodiffPipeline(DiffusionPipeline):
                 If `return_dict` is `True`, [`~pipelines.AudioPipelineOutput`] is returned, otherwise a `tuple` is
                 returned where the first element is a list with the generated audios
         """
-        self.debug = False
+        self.debug = True
 
         # 0. Default sample_size to unet
         sample_size = sample_size or self.model_primary.config.sample_size
@@ -821,7 +857,7 @@ class DiscodiffPipeline(DiffusionPipeline):
         )
 
         if self.debug:
-            print("primary_latents before loop", primary_latents.mean().cpu().item(), primary_latents.mean().cpu().item()) # debug
+            print("primary_latents before loop", primary_latents.mean().cpu().item(), primary_latents.var().cpu().item()) # debug
 
         
         '''
@@ -857,8 +893,8 @@ class DiscodiffPipeline(DiffusionPipeline):
                 encoder_hidden_states=prompt_embeds_t5,
                 class_labels=class_labels,
                 timestep_cond=prompt_embeds_clap,
-                return_dict=False,
-            )[0] # [B, d, L]
+                return_dict=True,
+            ).sample # [B, d, L]
 
             # perform guidance
             if self.do_classifier_free_guidance:
@@ -903,7 +939,7 @@ class DiscodiffPipeline(DiffusionPipeline):
         # 9. Denoising loop (secondary)
         self._num_timesteps = len(timesteps)
 
-        print(timesteps)
+        print(timesteps) # debug
         for t in self.progress_bar(timesteps):
             # attach gt/sampled primary_latents as fixed conditioned
             secondary_latent_input = torch.cat([primary_latents, secondary_latents], dim=1) # [B, (1+K-1)d, L]
@@ -918,8 +954,8 @@ class DiscodiffPipeline(DiffusionPipeline):
                 encoder_hidden_states=prompt_embeds_t5,
                 class_labels=class_labels,
                 timestep_cond=prompt_embeds_clap,
-                return_dict=False,
-            )[0] # [B, (K-1)d, L]
+                return_dict=True,
+            ).sample # [B, (K-1)d, L]
             
             # perform guidance
             if self.do_classifier_free_guidance:
@@ -935,13 +971,13 @@ class DiscodiffPipeline(DiffusionPipeline):
             #     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
             #     secondary_pred = rescale_noise_cfg(secondary_pred, secondary_pred_cond, guidance_rescale=self.guidance_rescale)
 
-            if self.debug:
+            if (t == timesteps[1] or t == timesteps[-1] or t == timesteps[10] or t == timesteps[-10]) and  self.debug:
                 print(f"Secondary loop: secondary_pred at timestep {t}", secondary_pred.mean().cpu().item(), secondary_pred.var().cpu().item()) # debug
             
             # compute the previous noisy sample x_t -> x_t-1
             secondary_latents = self.scheduler_secondary.step(secondary_pred, t, secondary_latents, **extra_step_kwargs).prev_sample
 
-            if self.debug:
+            if (t == timesteps[1] or t == timesteps[-1] or t == timesteps[10] or t == timesteps[-10]) and  self.debug:
                 print(f"Secondary loop: secondary_latents after timestep {t}", secondary_latents.mean().cpu().item(), secondary_latents.var().cpu().item()) # debug
 
         # 10. Get final latents and decode to audio
@@ -956,13 +992,14 @@ class DiscodiffPipeline(DiffusionPipeline):
             print(f"Generated final primary latents", final_latents[:,:DAC_DIM_SINGLE].mean().cpu().item(), final_latents[:,:DAC_DIM_SINGLE].var().cpu().item()) # debug
             print(f"Generated final secondary latents", final_latents[:,DAC_DIM_SINGLE:].mean().cpu().item(), final_latents[:,DAC_DIM_SINGLE:].var().cpu().item()) # debug
             print(f"Generated final latents", final_latents.mean().cpu().item(), final_latents.var().cpu().item()) # debug
-        
+
+        print("Sampled latents shape", final_latents.shape) # debug
         z = self.dac_model.quantizer.from_latents(final_latents)[0] # [B, D, L]
         wav_sampled = self.dac_model.decode(z).squeeze(1) # [B, T]
         if torch.abs(wav_sampled).max() > 1:
             wav_sampled = wav_sampled / torch.abs(wav_sampled).max()
 
         if not return_dict:
-            return (wav_sampled,)
+            return (wav_sampled, final_latents)
 
-        return AudioPipelineOutput(audios=wav_sampled)
+        return AudioPipelineOutput(audios=wav_sampled, latents=final_latents)

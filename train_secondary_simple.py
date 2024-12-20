@@ -30,6 +30,7 @@ from typing import Union, Dict
 from config.base.attrdict import AttrDict
 from config.load_from_path import load_config_from_path
 from models.unet.unet_1d_condition import UNet1DConditionModel
+from models.unet.unet_1d_condition_simple import UNet1DConditionModelSimple
 from pipelines.pipeline_discodiff import dac_latents_normalize, dac_latents_denormalize, DAC_DIM_SINGLE, DiscodiffPipeline
 from utils import prob_mask_like, get_velocity, set_device_accelerator, pad_last_dim, audio_spectrogram_image
 from train import logger, save_demo, save_config, check_config
@@ -45,6 +46,11 @@ class SimpleSecondaryLitModel(L.LightningModule):
 
         self.config = config
 
+        if config.architecture == "default":
+            NNClass = UNet1DConditionModel
+        else:
+            NNClass = UNet1DConditionModelSimple
+        
         # create denoise model and scheduler
         self.model_secondary = UNet1DConditionModel(
             sample_size=config.sample_size,
@@ -189,6 +195,7 @@ def update_config(args, config: AttrDict):
     config_update["name"] = args.name
     config_update["trainset_dir"] = args.trainset_dir
     config_update["valset_dir"] = args.valset_dir
+    config_update["architecture"] = args.architecture
     if args.additional_trainset_dir is not None:
         config_update["additional_trainset_dir"] = args.additional_trainset_dir
     if args.train_batch_size is not None:
@@ -319,6 +326,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '--name', type=str, nargs='?',
         help='a string indicating the name of this run; if not specified, will be set to the timestamp'
+    )
+    parser.add_argument(
+        '--architecture', type=str, default="default",
+        help='to test on a better architecture: the conditional U-net better, or huggingface existing unconditional U-net better, choose from "default" and "huggingface"'
     )
     parser.add_argument(
         '--num-gpus', type=int, default=1,

@@ -8,3 +8,13 @@ config_diffusion_default = AttrDict(
     cfg_scale = 7.5,
     cfg_rescale = 0.1,
 )
+
+
+config_diffusion_ddpm = AttrDict(
+    num_train_timesteps = 1000,
+    num_inference_timesteps = 100,
+    prediction_type = 'sample', # choose from ['epsilon', 'sample', 'v_prediction']
+    cfg_drop_prob = 0.25,
+    cfg_scale = 7.5,
+    cfg_rescale = 0.1,
+)

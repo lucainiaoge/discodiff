@@ -19,6 +19,7 @@ def update_config(args, config: AttrDict):
     config_update = {}
     config_update["name"] = args.name
     config_update["testset_dir"] = args.testset_dir
+    config_update["scheduler_type"] = args.scheduler_type
     if args.num_inference_timesteps is not None:
         config_update["num_inference_timesteps"] = args.num_inference_timesteps
     if args.cfg_scale is not None:
@@ -27,6 +28,12 @@ def update_config(args, config: AttrDict):
         config_update["num_gpus"] = args.num_gpus
     if args.test_batch_size is not None:
         config_update["test_batch_size"] = args.test_batch_size
+    if args.prediction_type is not None:
+        config_update["prediction_type"] = args.prediction_type
+    if args.prediction_type_secondary is not None:
+        config_update["prediction_type_secondary"] = args.prediction_type_secondary
+    else:
+        config_update["prediction_type_secondary"] = args.prediction_type
     config.override(config_update)
 
 def main(args):
@@ -132,6 +139,18 @@ if __name__ == '__main__':
     parser.add_argument(
         '--num-inference-timesteps', type=int, default=100,
         help='diffusion inference timesteps, default to 100'
+    )
+    parser.add_argument(
+        '--prediction-type', type=str, nargs='?',
+        help='the target of diffusion model'
+    )
+    parser.add_argument(
+        '--prediction-type-secondary', type=str, nargs='?',
+        help='the target of secondary diffusion model'
+    )
+    parser.add_argument(
+        '--scheduler-type', type=str, default="DPMSolverMultistep",
+        help='the diffusion model type, choose from ["DDPM", "DDIM", "DPMSolverMultistep"]'
     )
     parser.add_argument(
         '--wandb-key', type=str, nargs='?',
