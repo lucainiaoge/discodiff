@@ -721,7 +721,7 @@ def main(args):
     # define lightning module
     if args.load_ckpt_path is not None:
         lightning_module = DiscodiffLitModel.load_from_checkpoint(
-            args.load_ckpt_path, config=config,
+            args.load_ckpt_path, config=config, map_location=torch.device("cpu")
         )
         logger.info(f"- Lightning module initialized with given checkpoint {args.load_ckpt_path} \n")
     else:
