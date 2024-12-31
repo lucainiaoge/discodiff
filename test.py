@@ -1,6 +1,7 @@
 import os
 import logging
 import argparse
+from copy import deepcopy
 from datetime import datetime
 
 from torch.utils.data import Dataset, DataLoader
@@ -34,7 +35,7 @@ def update_config(args, config: AttrDict):
         config_update["prediction_type_secondary"] = args.prediction_type_secondary
     else:
         config_update["prediction_type_secondary"] = args.prediction_type
-    config.override(config_update)
+    return config.override(config_update)
 
 def main(args):
     # constuct save_path
@@ -50,16 +51,19 @@ def main(args):
 
     # load lightning module and config
     lightning_module = DiscodiffLitModel.load_from_checkpoint(args.ckpt_path)
-    config = lightning_module.config
-    update_config(args, config)
+    config = deepcopy(lightning_module.config)
+    config = update_config(args, config)
     check_config(config)
-    logger.info(f"- Running with config \n {config} \n")
-    config_save_path = os.path.join(save_path, "config.json")
-    save_config(config_save_path, config)
     
     lightning_module.update_training_config(config)
     logger.info(f"- Lightning module initialized with given checkpoint {args.ckpt_path} \n")
 
+    logger.info(f"- Running with config \n {lightning_module.config} \n")
+    logger.info(f"- Sampling inference timesteps: {lightning_module.config.num_inference_timesteps} \n")
+    logger.info(f"- Sampling scheduler: {lightning_module.config.scheduler_type} \n")
+    config_save_path = os.path.join(save_path, "config.json")
+    save_config(config_save_path, lightning_module.config)
+    
     # callbacks
     exc_callback = ExceptionCallback()
     demo_callback = DemoCallback(config, save_path)
@@ -75,6 +79,7 @@ def main(args):
         dac_frame_len=config.sample_size,
         dataset_size=1,
         random_load=True,
+        remove_irrelevant_text=False
     )
     test_dataloader = DataLoader(
         test_dataset,

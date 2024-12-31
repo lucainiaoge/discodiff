@@ -750,7 +750,7 @@ class DiscodiffPipeline(DiffusionPipeline):
                 If `return_dict` is `True`, [`~pipelines.AudioPipelineOutput`] is returned, otherwise a `tuple` is
                 returned where the first element is a list with the generated audios
         """
-        self.debug = True
+        self.debug = False
 
         # 0. Default sample_size to unet
         sample_size = sample_size or self.model_primary.config.sample_size

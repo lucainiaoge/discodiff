@@ -205,24 +205,6 @@ class DiscodiffLitModel(L.LightningModule):
             encoder_hid_dim_type = "text_proj",
             time_cond_proj_dim=config.time_embedding_dim,
         )
-
-        if hasattr(config, "scheduler_type"):
-            SchedulerType = supported_schedulers[config.scheduler_type]
-        else:
-            SchedulerType = DPMSolverMultistepScheduler
-        self.noise_scheduler = SchedulerType(
-            num_train_timesteps=config.num_train_timesteps,
-            prediction_type=config.prediction_type,
-        )
-        if hasattr(config, "prediction_type_secondary"):
-            prediction_type_secondary = config.prediction_type_secondary
-        else:
-            prediction_type_secondary = config.prediction_type
-        self.noise_scheduler_secondary = SchedulerType(
-            num_train_timesteps=config.num_train_timesteps,
-            prediction_type=prediction_type_secondary,
-        )
-        logger.info("-- Denoise model and scheduler initialized --")
     
         # get other components
         dac_model_path = dac.utils.download(model_type="44khz")
@@ -253,6 +235,24 @@ class DiscodiffLitModel(L.LightningModule):
 
         self.load_audio_clap_prob = config.load_audio_clap_prob
         assert self.load_audio_clap_prob >= 0 and self.load_audio_clap_prob <= 1
+
+        if hasattr(config, "scheduler_type"):
+            SchedulerType = supported_schedulers[config.scheduler_type]
+        else:
+            SchedulerType = DPMSolverMultistepScheduler
+        self.noise_scheduler = SchedulerType(
+            num_train_timesteps=config.num_train_timesteps,
+            prediction_type=config.prediction_type,
+        )
+        if hasattr(config, "prediction_type_secondary"):
+            prediction_type_secondary = config.prediction_type_secondary
+        else:
+            prediction_type_secondary = config.prediction_type
+        self.noise_scheduler_secondary = SchedulerType(
+            num_train_timesteps=config.num_train_timesteps,
+            prediction_type=prediction_type_secondary,
+        )
+        logger.info("-- Denoise model and scheduler initialized --")
     
     @torch.no_grad()
     def get_text_emb_from_input_dict(self, batch: Dict):
@@ -541,6 +541,7 @@ def save_demo(
     sample_rate: int,
 ):
     if len(outputs) == 0:
+        print("No output detected...")
         return None, None
     bs = len(batch['name'])
     log_dict = {}
@@ -677,6 +678,8 @@ class DemoCallback(L.Callback):
 
     @torch.no_grad()
     def on_validation_batch_end(self, trainer, module, outputs, batch, batch_idx):
+        print(f"saving demo to {self.demo_save_path}...")
+        print(batch['name']) # debug
         log_dict, log_table = save_demo(outputs, batch, self.demo_save_path, self.sample_rate)
         if log_dict is None and log_table is None:
             return
