@@ -635,6 +635,7 @@ class DacEncodecClapDatasetH5(Dataset):
         dataset_size:int = 1000, # dummy dataset size only if random_load is True
         random_load:bool = True,
         random_onset:bool = False,
+        remove_irrelevant_text: bool = True
     ):
         super().__init__()
         self.random_load = random_load
@@ -698,6 +699,8 @@ class DacEncodecClapDatasetH5(Dataset):
         # self.text_emb_dim = 1024
         # self.t5_model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-large", torch_dtype=torch.float32).to(self.device)
         self.tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-large")
+
+        self.remove_irrelevant_text = remove_irrelevant_text
 
         self.total_runtime = 0
         self.total_visits = 0
@@ -885,6 +888,13 @@ class DacEncodecClapDatasetH5(Dataset):
         return_dict["t5_null_input_ids"] = enc["input_ids"][-1].cpu().numpy()
         return_dict["t5_attention_mask"] = enc["attention_mask"][0].cpu().numpy()
 
+        if self.remove_irrelevant_text:
+            if 'text' in return_dict:
+                return_dict.pop("text")
+            if 'tags_text' in return_dict:
+                return_dict.pop("tags_text")
+            if 'chatgpt_text' in return_dict:
+                return_dict.pop("chatgpt_text")   
         return return_dict
 
     def _encode_random_text_to_t5(self, data_dict):

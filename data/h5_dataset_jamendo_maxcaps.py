@@ -122,7 +122,7 @@ class DacEncodecClapDatasetJamendocaps(Dataset):
         if not self.no_audio_chunk and not self.use_dac and not self.use_encodec and not self.use_clap:
             print("Neither DAC or Encodec is given. Switched into no_audio_chunk mode")
             self.no_audio_chunk = True
-
+        
         # set parameters
         self.sample_rate = sample_rate
         self.min_sec = min_sec
@@ -182,9 +182,13 @@ class DacEncodecClapDatasetJamendocaps(Dataset):
 
         return dac_rvq, dac_latents, encodec_rvq, encodec_latents, clap_emb
     
-    def get_wav_through_audio_id(self, audio_id: int):
-        wav = torch.tensor(self.hf_dataset['audio']['array']).to(torch.float32).unzqueeze(0)
-        sr = int(self.hf_dataset['audio']['sampling_rate'])
+    def get_wav_through_audio_id(self, audio_id: int, audio_obj = None):
+        if audio_obj is None:
+            audio_obj = self.hf_dataset[audio_id]['audio']
+        
+        wav = torch.tensor(audio_obj['array']).to(torch.float32).unsqueeze(0)
+        print(wav.shape)
+        sr = int(audio_obj['sampling_rate'])
         return wav, sr
         
     @torch.no_grad()
@@ -237,7 +241,8 @@ class DacEncodecClapDatasetJamendocaps(Dataset):
             print("Target dir", target_dir, "is created!")
 
         audio_id = self.audio_ids[audio_id_parsed]
-        filename = self.hf_dataset[audio_id]['path']
+        audio_obj = self.hf_dataset[audio_id]['audio']
+        filename = audio_obj['path']
         basename = os.path.splitext(filename)[0]
         out_h5_filename = f"{basename}.hdf5"
         out_h5_path = os.path.join(target_dir, out_h5_filename)
@@ -282,7 +287,7 @@ class DacEncodecClapDatasetJamendocaps(Dataset):
         if self.no_audio_chunk:
             return
 
-        wav_all, sample_rate = self.get_wav_through_audio_id(file_id, relative_index)
+        wav_all, sample_rate = self.get_wav_through_audio_id(audio_id, audio_obj = audio_obj)
         chunk_len = int(self.chunk_dur_sec * sample_rate)
         num_chunks = int(wav_all.shape[-1] / chunk_len)
         chunk_starts = np.arange(num_chunks) * chunk_len
@@ -501,10 +506,19 @@ class DacEncodecClapTextFeatDatasetJamendocaps(DacEncodecClapDatasetJamendocaps)
                         json.dump(self.text_feat_metadata, jsonFile)
                         print(f"Dumped text_feat_metadata to {json_path}, num of parsed files: {len(self.text_feat_metadata)}")
 
-        self.audio_ids = []
+        starting_id = 0
+        if valid_ids_json_path is not None and os.path.exists(valid_ids_json_path):
+            with open(valid_ids_json_path) as f:
+                self.audio_ids = json.load(f)
+            starting_id = self.audio_ids[-1]
+            print(f"Resumed i_audio {starting_id}")
+            
+        else:
+            self.audio_ids = []
+        
         self.audio_names_from_json = list(self.text_feat_metadata.keys())
         # the keys of the json should match the audio names saved in the parent class
-        for i_audio in range(len(self.hf_dataset)):
+        for i_audio in range(starting_id, len(self.hf_dataset)):
             audio_filename = self.hf_dataset[i_audio]['audio']['path']
             audio_name = os.path.splitext(audio_filename)[0]
             audio_name = get_true_audio_name(audio_name)
@@ -517,6 +531,13 @@ class DacEncodecClapTextFeatDatasetJamendocaps(DacEncodecClapDatasetJamendocaps)
                 with open(valid_ids_json_path, "w") as jsonFile:
                 	json.dump(self.audio_ids, jsonFile)
 
+        if kwargs["percent_start_end"][0] >= 0 and kwargs["percent_start_end"][1] <= 100:
+            i_raw_start = int(kwargs["percent_start_end"][0] / 100 * len(self.audio_ids))
+            i_raw_end = int(kwargs["percent_start_end"][1] / 100 * len(self.audio_ids))
+            print(f"Starting and ending relative id: {i_raw_start}, {i_raw_end}")
+            self.audio_ids = self.audio_ids[i_raw_start:i_raw_end]
+            
+    
     @torch.no_grad()
     def get_text_clap_emb(self, texts: Union[str, List[str]]):
         # texts can be list of strings or a single string
@@ -583,7 +604,7 @@ if __name__ == '__main__':
         '-json-path', type=str,
     )
     parser.add_argument(
-        '--caption-dir', type=str, default='',
+        '--caption-dir', type=str, nargs='?',
     )
     parser.add_argument(
         '--metadata-dir', type=str, nargs='?',
