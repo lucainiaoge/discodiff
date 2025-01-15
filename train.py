@@ -37,7 +37,8 @@ from config.load_from_path import load_config_from_path
 from data.h5_dataset import DacEncodecClapDatasetH5
 from models.unet.unet_1d_condition import UNet1DConditionModel
 from models.unet.unet_1d_condition_simple import UNet1DConditionModelSimple
-from pipelines.pipeline_discodiff import dac_latents_normalize, DAC_DIM_SINGLE, DiscodiffPipeline
+from models.unet.unet_1d_condition_old import Unet1DVALLEPatternSecondary
+from pipelines.pipeline_discodiff import dac_latents_normalize, dac_latents_normalize_codebook_specific, DAC_DIM_SINGLE, DiscodiffPipeline
 from utils import prob_mask_like, get_velocity, set_device_accelerator, pad_last_dim, audio_spectrogram_image
 
 logger = logging.getLogger()
@@ -190,21 +191,37 @@ class DiscodiffLitModel(L.LightningModule):
             time_cond_proj_dim=config.time_embedding_dim,
         )
 
-        self.model_secondary = UNet1DConditionModel(
-            sample_size=config.sample_size,
-            in_channels=config.in_channels_secondary,
-            out_channels=config.out_channels_secondary,
-            down_block_types=config.down_block_types_secondary,
-            mid_block_type=config.mid_block_type_secondary,
-            up_block_types=config.up_block_types_secondary,
-            layers_per_block=config.layers_per_block,
-            block_out_channels=config.block_out_channels_secondary,
-            # num_class_embeds=config.num_class_embeds + 1, # # the last class for CFG, this place is reserved for key conditioning  # disable class emb
-            # class_embeddings_concat=config.class_embeddings_concat,  # disable class emb
-            encoder_hid_dim=config.encoder_hid_dim,
-            encoder_hid_dim_type = "text_proj",
-            time_cond_proj_dim=config.time_embedding_dim,
-        )
+        if not hasattr(config, "model_dim_in_old"):
+            self.use_old_model = False
+            self.model_secondary = UNet1DConditionModel(
+                sample_size=config.sample_size,
+                in_channels=config.in_channels_secondary,
+                out_channels=config.out_channels_secondary,
+                down_block_types=config.down_block_types_secondary,
+                mid_block_type=config.mid_block_type_secondary,
+                up_block_types=config.up_block_types_secondary,
+                layers_per_block=config.layers_per_block,
+                block_out_channels=config.block_out_channels_secondary,
+                # num_class_embeds=config.num_class_embeds + 1, # # the last class for CFG, this place is reserved for key conditioning  # disable class emb
+                # class_embeddings_concat=config.class_embeddings_concat,  # disable class emb
+                encoder_hid_dim=config.encoder_hid_dim,
+                encoder_hid_dim_type = "text_proj",
+                time_cond_proj_dim=config.time_embedding_dim,
+            )
+        else:
+            self.use_old_model = True
+            self.model_secondary = Unet1DVALLEPatternSecondary(
+                input_dim = config.model_dim_in_old,
+                feature_cond_dim=config.clap_dim + config.meta_cond_dim,
+                chroma_cond_dim=config.chroma_dim,
+                text_cond_dim=config.encoder_hid_dim,
+                num_codebooks = config.num_codebooks,
+                num_attn_heads=config.num_codebooks,
+                dim = config.inner_dim_old,
+                dim_mults = config.dim_mults_old,
+                attn_dim_head = config.head_dim_old,
+                cond_drop_prob = config.cfg_drop_prob,
+            )
     
         # get other components
         dac_model_path = dac.utils.download(model_type="44khz")
@@ -248,10 +265,18 @@ class DiscodiffLitModel(L.LightningModule):
             prediction_type_secondary = config.prediction_type_secondary
         else:
             prediction_type_secondary = config.prediction_type
-        self.noise_scheduler_secondary = SchedulerType(
-            num_train_timesteps=config.num_train_timesteps,
-            prediction_type=prediction_type_secondary,
-        )
+            
+        if not self.use_old_model:
+            self.noise_scheduler_secondary = SchedulerType(
+                num_train_timesteps=config.num_train_timesteps,
+                prediction_type=prediction_type_secondary,
+            )
+        else:
+            self.noise_scheduler_secondary = DDPMScheduler(
+                num_train_timesteps=100,
+                prediction_type="v_prediction",
+                beta_schedule="squaredcos_cap_v2"
+            )
         logger.info("-- Denoise model and scheduler initialized --")
     
     @torch.no_grad()
@@ -298,7 +323,13 @@ class DiscodiffLitModel(L.LightningModule):
         device = dac_latents.device
         dtype = dac_latents.dtype
         dac_latents_gt_primary = dac_latents_normalize(dac_latents[...,:DAC_DIM_SINGLE, :], selection="primary")
-        dac_latents_gt_secondary = dac_latents_normalize(dac_latents[...,DAC_DIM_SINGLE:, :], selection="secondary") if not train_primary else None
+        if not train_primary and not self.use_old_model:
+            dac_latents_gt_secondary = dac_latents_normalize(dac_latents[...,DAC_DIM_SINGLE:, :], selection="secondary")
+        elif not train_primary and self.use_old_model:
+            dac_latents_gt_secondary = dac_latents_normalize_codebook_specific(dac_latents[...,DAC_DIM_SINGLE:, :], selection="secondary")
+        else:
+            dac_latents_gt_secondary = None
+        
         if self.debug:
             if train_primary:
                 print("Training primary")
@@ -390,13 +421,18 @@ class DiscodiffLitModel(L.LightningModule):
         
         # training pass
         model_to_train = self.model_primary if train_primary else self.model_secondary
-        model_output = model_to_train(
-            noisy_input, timesteps,
-            encoder_hidden_states=text_t5_embs,
-            class_labels=class_labels,
-            timestep_cond=clap_emb,
-            return_dict=True,
-        ).sample # [B, d, L] (primary) or [B, (K-1)d, L] (secondary)
+        if not self.use_old_model or train_primary:
+            model_output = model_to_train(
+                noisy_input, timesteps,
+                encoder_hidden_states=text_t5_embs,
+                class_labels=class_labels,
+                timestep_cond=clap_emb,
+                return_dict=True,
+            ).sample # [B, d, L] (primary) or [B, (K-1)d, L] (secondary)
+        else:
+            feature_cond = text_t5_embs[...,0,:]
+            vec_cond = torch.cat([clap_emb, clap_emb * 0], dim = -1)
+            model_output = model_to_train(noisy_input, timesteps, vec_cond = vec_cond, seq_conds = [None, text_t5_embs.permute(0, 2, 1)])
 
         if self.debug:
             print(f"model_output mean  = {model_output[0].mean().cpu().item()}, var = {model_output[0].var().cpu().item()}")
@@ -453,6 +489,7 @@ class DiscodiffLitModel(L.LightningModule):
             prompt_embeds_clap_audio = prompt_embeds_clap_audio,
             use_audio_clap = False,
             return_dict = True,
+            use_old_model = self.use_old_model,
         ).audios
         print("Sampling both primary and secondary given text embeddings and audio CLAP embedding...")
         sampled_audios_given_audio_clap = self.pipeline(
@@ -467,6 +504,7 @@ class DiscodiffLitModel(L.LightningModule):
             prompt_embeds_clap_audio = prompt_embeds_clap_audio,
             use_audio_clap = True,
             return_dict = True,
+            use_old_model = self.use_old_model,
         ).audios
         print("Sampling primary given secondary and text embeddings...")
         sampled_audios_given_primary, sampled_latents_given_primary = self.pipeline(
@@ -486,6 +524,7 @@ class DiscodiffLitModel(L.LightningModule):
             prompt_embeds_clap_audio = prompt_embeds_clap_audio,
             use_audio_clap = False,
             return_dict = False,
+            use_old_model = self.use_old_model,
         )
         print("Reconstructing the ground-truth DAC latents...")
 
@@ -640,6 +679,8 @@ def update_config(args, config: AttrDict):
         config_update["load_audio_clap_prob"] = args.load_audio_clap_prob
     if args.ckpt_save_top_k is not None:
         config_update["save_top_k"] = args.ckpt_save_top_k
+    if args.use_old_model is not None:
+        config_update["use_old_model"] = args.use_old_model
     if args.prediction_type is not None:
         config_update["prediction_type"] = args.prediction_type
     else:
@@ -789,6 +830,8 @@ def main(args):
     logger.info(f"total training visits: {data_module.train_dataset.total_visits}")
     logger.info(f"total train data loading time (sec): {data_module.train_dataset.total_runtime}")
 
+# TODO: debug old model adaptation, merge old ckpt with new, run sampling with the merged ckpt
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Args in training Discodiff.')
     parser.add_argument(
@@ -858,6 +901,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '--scheduler-type', type=str, default="DDPM",
         help='the diffusion model type, choose from ["DDPM", "DDIM", "DPMSolverMultistep"]'
+    )
+    parser.add_argument(
+        '--use-old-model', type=bool, default=False,
+        help='to adapt to the old codebase, set to True, and then secondary model will be adapted to the version of old codebase'
     )
     parser.add_argument(
         '--ckpt-save-top-k', type=int, nargs='?',

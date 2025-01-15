@@ -146,11 +146,17 @@ def audio_spectrogram_image(waveform, power=2.0, sample_rate=48000):
 def load_state_dict_partial(
     target_state_dict, ckpt_state_dict,
     must_contain = None, dont_contain = None,
+    replace_word = None,
     verbose=False
-):
+):      
     for name, param in ckpt_state_dict.items():
-        if name not in target_state_dict:
-            if verbose: print(f"{name} not in the model state dict")
+        target_name = name
+        if replace_word is not None:
+            for to_replace, correct_word in replace_word.items():
+                target_name = target_name.replace(to_replace, correct_word)
+            
+        if target_name not in target_state_dict:
+            if verbose: print(f"{target_name} not in the model state dict")
             continue
 
         if isinstance(param, torch.nn.Parameter):
@@ -158,62 +164,62 @@ def load_state_dict_partial(
         elif torch.is_tensor(param):
             pass
         else:
-            if verbose: print(f"{name} has unrecognized type {str(type(param))}")
+            if verbose: print(f"{target_name} has unrecognized type {str(type(param))}")
             continue
 
         if must_contain is not None:
-            if must_contain not in name:
-                print(must_contain, "should be contained. Skipped", name)
+            if must_contain not in target_name:
+                print(must_contain, "should be contained. Skipped", target_name)
                 continue
 
         if dont_contain is not None:
-            if dont_contain in name:
-                print(dont_contain, "should not be contained. Skipped", name)
+            if dont_contain in target_name:
+                print(dont_contain, "should not be contained. Skipped", target_name)
                 continue
 
         try:
-            if target_state_dict[name].shape == param.shape:
-                target_state_dict[name].copy_(param)
-                if verbose: print(f"{name} loaded into model state dict")
+            if target_state_dict[target_name].shape == param.shape:
+                target_state_dict[target_name].copy_(param)
+                if verbose: print(f"{target_name} loaded into model state dict")
             else:
-                shape_self = target_state_dict[name].shape
+                shape_self = target_state_dict[target_name].shape
                 shape_to_load = param.shape
                 if len(shape_self) != len(shape_to_load):
                     raise ValueError(
-                        f'Shape {shape_to_load} of loaded param {name} is different from {shape_self}.'
+                        f'Shape {shape_to_load} of loaded param {target_name} is different from {shape_self}.'
                     )
                 elif shape_self < shape_to_load:
                     raise ValueError(
-                        f'Shape {shape_to_load} of loaded param {name} is larger than {shape_self}.'
+                        f'Shape {shape_to_load} of loaded param {target_name} is larger than {shape_self}.'
                     )
 
                 if len(shape_self) == 1:
-                    target_state_dict[name][:shape_to_load[0]].copy_(param)
+                    target_state_dict[target_name][:shape_to_load[0]].copy_(param)
                 elif len(shape_self) == 2:
-                    target_state_dict[name][:shape_to_load[0], :shape_to_load[1]].copy_(param)
+                    target_state_dict[target_name][:shape_to_load[0], :shape_to_load[1]].copy_(param)
                 elif len(shape_self) == 3:
-                    target_state_dict[name][:shape_to_load[0], :shape_to_load[1], :shape_to_load[2]].copy_(param)
+                    target_state_dict[target_name][:shape_to_load[0], :shape_to_load[1], :shape_to_load[2]].copy_(param)
                 elif len(shape_self) == 4:
-                    target_state_dict[name][:shape_to_load[0], :shape_to_load[1], :shape_to_load[2],
+                    target_state_dict[target_name][:shape_to_load[0], :shape_to_load[1], :shape_to_load[2],
                     :shape_to_load[3]].copy_(param)
                 else:
                     raise ValueError(
-                        f'Shape {shape_to_load} of loaded param {name} is different from {shape_self}.'
+                        f'Shape {shape_to_load} of loaded param {target_name} is different from {shape_self}.'
                     )
 
                 if verbose:
-                    print(f"{name} with shape {shape_to_load} partially loaded into model, with shape {shape_self}")
+                    print(f"{target_name} with shape {shape_to_load} partially loaded into model, with shape {shape_self}")
 
         except Exception as e:
-            print(f"error encountered in loading param {name}")
+            print(f"error encountered in loading param {target_name}")
             print(e)
 
 def load_state_dict_partial_primary_secondary(
-    target_state_dict, ckpt_state_dict_primary, ckpt_state_dict_secondary, verbose=False
+    target_state_dict, ckpt_state_dict_primary, ckpt_state_dict_secondary, replace_word = None, verbose=False
 ):
     load_state_dict_partial(
-        target_state_dict, ckpt_state_dict_primary, must_contain = None, verbose=verbose
+        target_state_dict, ckpt_state_dict_primary, must_contain = None, replace_word=replace_word, verbose=verbose
     )
     load_state_dict_partial(
-        target_state_dict, ckpt_state_dict_secondary, must_contain = "secondary", verbose=verbose
+        target_state_dict, ckpt_state_dict_secondary, must_contain = "secondary", replace_word=replace_word, verbose=verbose
     )

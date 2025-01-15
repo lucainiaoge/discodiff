@@ -34,6 +34,8 @@ if __name__ == '__main__':
         lightning_module.state_dict(),
         torch.load(args.primary_ckpt_path, map_location=torch.device('cpu'))['state_dict'],
         torch.load(args.secondary_ckpt_path, map_location=torch.device('cpu'))['state_dict'],
+        # replace_word = {"denoise_": "", "diffusion.": ""},
+        verbose=True
     )
     print("Loaded checkpoint", args.primary_ckpt_path, "and", args.secondary_ckpt_path)
 

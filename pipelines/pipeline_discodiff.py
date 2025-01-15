@@ -30,8 +30,8 @@ class AudioPipelineOutput(BaseOutput):
 
 # the following codebook-specific normalization is deprecated
 # but do not delete them, because the dimensions are of use
-DAC_CODEBOOK_MEANS = [-0.0357, -0.0271, -0.0347, -0.0220, -0.0334, -0.0355, -0.0365, -0.0300, -0.0244] # [0.58, -0.11, -0.18, -0.04, -0.23, -0.06, 0.08, 0, 0.03]
-DAC_CODEBOOK_STDS = [3.2464, 3.2818, 3.2376, 3.2643, 3.2814, 3.2808, 3.2847, 3.2798, 3.2684] # [4.95, 4.00, 3.61, 3.41, 3.24, 3.16, 3.06, 2.93, 2.79]
+DAC_CODEBOOK_MEANS = [0.58, -0.11, -0.18, -0.04, -0.23, -0.06, 0.08, 0, 0.03] # [-0.0357, -0.0271, -0.0347, -0.0220, -0.0334, -0.0355, -0.0365, -0.0300, -0.0244]
+DAC_CODEBOOK_STDS = [4.95, 4.00, 3.61, 3.41, 3.24, 3.16, 3.06, 2.93, 2.79] # [3.2464, 3.2818, 3.2376, 3.2643, 3.2814, 3.2808, 3.2847, 3.2798, 3.2684]
 DAC_DIM_SINGLE = 8
 DAC_N_CODEBOOKS = len(DAC_CODEBOOK_MEANS)
 DAC_DIMS = DAC_DIM_SINGLE * DAC_N_CODEBOOKS
@@ -216,9 +216,10 @@ class DiscodiffPipeline(DiffusionPipeline):
             clap_processor=clap_processor
         )
 
-        assert self.model_primary.config.sample_size == self.model_secondary.config.sample_size
-        if self.model_primary.config.time_cond_proj_dim is not None:
-            assert self.model_primary.config.time_cond_proj_dim == self.model_secondary.config.time_cond_proj_dim
+        if hasattr(model_secondary, "config"):
+            assert self.model_primary.config.sample_size == self.model_secondary.config.sample_size
+            if self.model_primary.config.time_cond_proj_dim is not None:
+                assert self.model_primary.config.time_cond_proj_dim == self.model_secondary.config.time_cond_proj_dim
 
     @property
     def has_clap_model(self):
@@ -299,6 +300,8 @@ class DiscodiffPipeline(DiffusionPipeline):
         
         if self.has_clap_model:
             clap_device = next(self.clap_model.parameters()).device
+        else:
+            clap_device = next(self.model_primary.parameters()).device
 
         # get conditional t5 text embedding
         t5_device = next(self.t5_model.parameters()).device
@@ -335,6 +338,8 @@ class DiscodiffPipeline(DiffusionPipeline):
         if self.has_clap_model and prompt_embeds_clap is None:
             inputs_text_clap = self.clap_processor(text=prompt, return_tensors="pt").to(clap_device)
             prompt_embeds_clap = self.clap_model.get_text_features(**inputs_text_clap) # (n_texts, 512)
+        elif prompt_embeds_clap is not None:
+            pass
         else:
             prompt_embeds_clap = None
 
@@ -399,6 +404,8 @@ class DiscodiffPipeline(DiffusionPipeline):
             if self.has_clap_model and negative_prompt_embeds_clap is None:
                 uncond_inputs_text_clap = self.clap_processor(text=uncond_tokens, return_tensors="pt").to(clap_device)
                 negative_prompt_embeds_clap = self.clap_model.get_text_features(**uncond_inputs_text_clap) # (n_texts, 512)
+            elif negative_prompt_embeds_clap is not None:
+                pass
             else:
                 negative_prompt_embeds_clap = None
 
@@ -425,7 +432,8 @@ class DiscodiffPipeline(DiffusionPipeline):
         num_audios_per_prompt: int = 1,
         audio_embeds_clap: Optional[torch.Tensor] = None,
     ):
-        if not self.has_clap_model or wav is None:
+        print("has_clap_model = ", self.has_clap_model)
+        if (not self.has_clap_model or wav is None) and audio_embeds_clap is not None:
             return None, None
 
         if audio_embeds_clap is None:
@@ -687,6 +695,7 @@ class DiscodiffPipeline(DiffusionPipeline):
         prompt_wav_sample_rate: Optional[int] = None,
 
         use_audio_clap: bool = True,
+        use_old_model = False,
         
         return_dict: bool = True,
         **kwargs,
@@ -781,7 +790,10 @@ class DiscodiffPipeline(DiffusionPipeline):
         
         num_channels_latents_primary = self.model_primary.config.in_channels
         dim_codebook = num_channels_latents_primary
-        num_in_channels_latents_secondary = self.model_secondary.config.in_channels
+        if hasattr(self.model_secondary, "config"):
+            num_in_channels_latents_secondary = self.model_secondary.config.in_channels
+        else:
+            num_in_channels_latents_secondary = 72
         num_channels_latents_secondary = num_in_channels_latents_secondary - num_channels_latents_primary
         n_codebooks = num_in_channels_latents_secondary // dim_codebook
         assert num_in_channels_latents_secondary % dim_codebook == 0
@@ -920,8 +932,10 @@ class DiscodiffPipeline(DiffusionPipeline):
         )
 
         # 8. Prepare latent variables (secondary)
-        if secondary_latents is not None:
+        if secondary_latents is not None and not use_old_model:
             secondary_latents = dac_latents_normalize(secondary_latents, selection="secondary") if normalize_input_latents else secondary_latents
+        elif secondary_latents is not None and use_old_model:
+            secondary_latents = dac_latents_normalize_codebook_specific(secondary_latents, selection="secondary") if normalize_input_latents else secondary_latents
         
         secondary_latents = self.prepare_latents(
             batch_size * num_audios_per_prompt,
@@ -937,8 +951,6 @@ class DiscodiffPipeline(DiffusionPipeline):
         
         # 9. Denoising loop (secondary)
         self._num_timesteps = len(timesteps)
-
-        print(timesteps) # debug
         for t in self.progress_bar(timesteps):
             # attach gt/sampled primary_latents as fixed conditioned
             secondary_latent_input = torch.cat([primary_latents, secondary_latents], dim=1) # [B, (1+K-1)d, L]
@@ -948,13 +960,24 @@ class DiscodiffPipeline(DiffusionPipeline):
             secondary_latent_input = self.scheduler_secondary.scale_model_input(secondary_latent_input, t)
             
             # predict the noise residual
-            secondary_pred = self.model_secondary(
-                secondary_latent_input, t,
-                encoder_hidden_states=prompt_embeds_t5,
-                class_labels=class_labels,
-                timestep_cond=prompt_embeds_clap,
-                return_dict=True,
-            ).sample # [B, (K-1)d, L]
+            if not use_old_model:
+                secondary_pred = self.model_secondary(
+                    secondary_latent_input, t,
+                    encoder_hidden_states=prompt_embeds_t5,
+                    class_labels=class_labels,
+                    timestep_cond=prompt_embeds_clap,
+                    return_dict=True,
+                ).sample # [B, (K-1)d, L]
+            else:
+                vec_cond = torch.cat([prompt_embeds_clap, prompt_embeds_clap * 0], dim = -1)
+                timestep_tensor = torch.tensor(t).repeat(secondary_latent_input.shape[0]).to(device).long()
+                secondary_pred = self.model_secondary.forward_with_cond_scale(
+                    latent=secondary_latent_input,
+                    timestep=timestep_tensor,
+                    cond_scale=1.0,
+                    vec_cond=vec_cond,
+                    seq_conds=[None, prompt_embeds_t5.permute(0, 2, 1)]
+                )
             
             # perform guidance
             if self.do_classifier_free_guidance:
@@ -980,12 +1003,15 @@ class DiscodiffPipeline(DiffusionPipeline):
                 print(f"Secondary loop: secondary_latents after timestep {t}", secondary_latents.mean().cpu().item(), secondary_latents.var().cpu().item()) # debug
 
         # 10. Get final latents and decode to audio
-        latents = torch.cat([primary_latents, secondary_latents], dim=1) # [B, Kd, L]
-
-        if self.debug:
-            print(f"Generated latents", latents.mean().cpu().item(), latents.var().cpu().item()) # debug
-        
-        final_latents = dac_latents_denormalize(latents)
+        if not use_old_model:
+            latents = torch.cat([primary_latents, secondary_latents], dim=1) # [B, Kd, L]
+            if self.debug:
+                print(f"Generated latents", latents.mean().cpu().item(), latents.var().cpu().item()) # debug
+            final_latents = dac_latents_denormalize(latents)
+        else:
+            primary_normalized = dac_latents_denormalize(primary_latents)
+            secondary_normalized = dac_latents_denormalize_codebook_specific(secondary_latents, selection = "secondary")
+            final_latents = torch.cat([primary_normalized, secondary_normalized], dim=1) # [B, Kd, L]
 
         if self.debug:
             print(f"Generated final primary latents", final_latents[:,:DAC_DIM_SINGLE].mean().cpu().item(), final_latents[:,:DAC_DIM_SINGLE].var().cpu().item()) # debug

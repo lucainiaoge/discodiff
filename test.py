@@ -31,6 +31,8 @@ def update_config(args, config: AttrDict):
         config_update["test_batch_size"] = args.test_batch_size
     if args.prediction_type is not None:
         config_update["prediction_type"] = args.prediction_type
+    if args.use_old_model is not None:
+        config_update["use_old_model"] = args.use_old_model
     if args.prediction_type_secondary is not None:
         config_update["prediction_type_secondary"] = args.prediction_type_secondary
     else:
@@ -156,6 +158,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '--scheduler-type', type=str, default="DPMSolverMultistep",
         help='the diffusion model type, choose from ["DDPM", "DDIM", "DPMSolverMultistep"]'
+    )
+    parser.add_argument(
+        '--use-old-model', type=bool, default=False,
+        help='to adapt to the old codebase, set to True, and then secondary model will be adapted to the version of old codebase'
     )
     parser.add_argument(
         '--wandb-key', type=str, nargs='?',

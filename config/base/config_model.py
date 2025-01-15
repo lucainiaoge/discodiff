@@ -123,6 +123,53 @@ config_model_large = AttrDict(
     codebook_dim = 8,
 )
 
+config_model_large_old_secondary = AttrDict(
+    sample_size = 2240, # 2304, # 2320, # approx 27 sec dac
+    in_channels_primary = 8,
+    in_channels_secondary = 72,
+    out_channels_primary = 8,
+    out_channels_secondary = 64,
+    down_block_types = (
+        "AttnDownBlock1D",
+        "AttnDownBlock1D",
+        "CrossAttnDownBlock1D",
+        "AttnDownBlock1D",
+        "CrossAttnDownBlock1D",
+        "ResnetDownsampleBlock1D"
+    ),
+    mid_block_type = "UNetMidBlock1DCrossAttn",
+    up_block_types = (
+        "ResnetUpsampleBlock1D",
+        "CrossAttnUpBlock1D",
+        "AttnUpBlock1D",
+        "CrossAttnUpBlock1D",
+        "AttnUpBlock1D",
+        "AttnUpBlock1D"
+    ),
+    block_out_channels = (128, 256, 512, 512, 1024, 1024),
+
+    model_dim_in_old = 72,
+    model_dim_out_old = 72,
+    inner_dim_old = 576,
+    head_dim_old = 128,
+    dim_mults_old = (1, 1, 2, 2, 4),
+    clap_dim = 512,
+    meta_cond_dim = 512,
+    chroma_dim = 12,
+    
+    layers_per_block = 2,
+    num_class_embeds = 24,
+    class_embeddings_concat = False,
+    encoder_hid_dim = 1024, # for flan-t5-large text conditioning
+    time_embedding_dim = 512, # for CLAP text/audio conditioning
+    t5_model_name = "google/flan-t5-large",
+    
+    sample_rate = 44100,
+    num_codebooks = 9,
+    codebook_size = 1024,
+    codebook_dim = 8,
+)
+
 config_model_tiny = AttrDict(
     sample_size = 256, # 2.97 sec dac
     in_channels_primary = 8,
